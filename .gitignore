@@ -3,6 +3,7 @@
 .coverage
 .idea/
 .ipynb_checkpoints/
+.env
 .venv/
 .vscode/
 /coverage_html_report

@@ -161,7 +161,7 @@ class Snapshooter:
         log.info(f"Found snapshot '{snapshot_path}'")
         return snapshot_path
 
-    @overload
+    @overload  # pragma: no cover
     def try_read_snapshot(self, as_df: Literal[True]) -> pd.DataFrame|None:
         """ Tries to read the latest snapshot from the snapshot file system.
 
@@ -169,7 +169,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def try_read_snapshot(self, as_df: Literal[False] = False) -> List[dict]|None:
         """ Tries to read the latest snapshot from the snapshot file system.
 
@@ -177,7 +177,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def try_read_snapshot(self, before: datetime.datetime, as_df: Literal[True]) -> pd.DataFrame|None:
         """ Tries to read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
 
@@ -185,7 +185,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def try_read_snapshot(self, before: datetime.datetime, as_df: Literal[False] = False) -> List[dict]|None:
         """ Tries to read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
 
@@ -194,7 +194,7 @@ class Snapshooter:
         """
         ...
 
-    @overload
+    @overload  # pragma: no cover
     def try_read_snapshot(self, snapshot_path: str, as_df: Literal[True]) -> pd.DataFrame|None:
         """ Tries to read the snapshot from the given path.
 
@@ -203,7 +203,7 @@ class Snapshooter:
         :return: The snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def try_read_snapshot(self, snapshot_path: str, as_df: Literal[False] = False) -> List[dict]|None:
         """ Tries to read the snapshot from the given path.
 
@@ -230,7 +230,7 @@ class Snapshooter:
 
         return _convert_snapshot_as_required(latest_snapshot, as_df)
 
-    @overload
+    @overload  # pragma: no cover
     def read_snapshot(self, as_df: Literal[True]) -> pd.DataFrame:
         """ Read the latest snapshot from the snapshot file system.
 
@@ -238,7 +238,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def read_snapshot(self, as_df: Literal[False] = False) -> List[dict]:
         """ Read the latest snapshot from the snapshot file system.
 
@@ -247,7 +247,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def read_snapshot(self, before: datetime.datetime, as_df: Literal[True]) -> pd.DataFrame:
         """ Read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
 
@@ -257,7 +257,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def read_snapshot(self, before: datetime.datetime, as_df: Literal[False] = False) -> List[dict]:
         """ Read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
 
@@ -267,7 +267,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def read_snapshot(self, snapshot_path: str, as_df: Literal[True]) -> pd.DataFrame:
         """ Read the snapshot from the given path.
 
@@ -277,7 +277,7 @@ class Snapshooter:
         :return: The snapshot as pandas DataFrame.
         """
         ...
-    @overload
+    @overload  # pragma: no cover
     def read_snapshot(self, snapshot_path: str, as_df: Literal[False] = False) -> List[dict]:
         """ Read the snapshot from the given path.
 
@@ -329,7 +329,7 @@ class Snapshooter:
             if md5 is not None:
                 src_file_info["md5"] = md5
 
-    @overload
+    @overload  # pragma: no cover
     def generate_snapshot(self, as_df:Literal[False]=False) -> tuple[List[dict], datetime.datetime]:
         """Generate a snapshot of the src file system.
 
@@ -338,7 +338,7 @@ class Snapshooter:
         """
         ...
 
-    @overload
+    @overload  # pragma: no cover
     def generate_snapshot(self, as_df=Literal[True]) -> tuple[pd.DataFrame, datetime.datetime]:
         """Generate a snapshot of the src file system.
 
@@ -411,7 +411,7 @@ class Snapshooter:
         log.info(f"Saved snapshot")
         return new_snapshot_path
 
-    @overload
+    @overload  # pragma: no cover
     def compare_snapshots(
         self,
         left_snapshot: List[dict]|pd.DataFrame,
@@ -428,7 +428,7 @@ class Snapshooter:
         ...
         
     
-    @overload
+    @overload  # pragma: no cover
     def compare_snapshots(
         self,
         left_snapshot: List[dict]|pd.DataFrame,
@@ -477,7 +477,7 @@ class Snapshooter:
 
         return df if as_df else df.to_dict("records")
 
-    @overload
+    @overload  # pragma: no cover
     def restore_snapshot(self, before: datetime.datetime = None):
         """Restore the latest snapshot. If timestamp is given, restore the snapshot which was created before or at the given timestamp.
 
@@ -485,7 +485,7 @@ class Snapshooter:
         """
         ...
 
-    @overload
+    @overload  # pragma: no cover
     def restore_snapshot(self, snapshot_to_restore: List[dict]|pd.DataFrame):
         """Restore the given snapshot.
 
@@ -493,7 +493,7 @@ class Snapshooter:
         """
         ...
 
-    @overload
+    @overload  # pragma: no cover
     def restore_snapshot(self, diff: List[dict]|pd.DataFrame):
         """Restore the left snapshot by applying the given diff to the right snapshot. 
 
