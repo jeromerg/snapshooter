@@ -1,0 +1,25 @@
+name: Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.10
+    - name: Install Python dependencies
+      uses: py-actions/py-dependency-install@v2
+    - name: Test with pytest and coverage
+      run: |
+        coverage run --source=snapshooter -m pytest
+        coverage html

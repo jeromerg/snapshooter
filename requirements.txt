@@ -1,0 +1,9 @@
+adlfs
+azure-identity
+azure-storage-blob
+dask
+fsspec
+pandas
+pytest
+python-dotenv
+coverage

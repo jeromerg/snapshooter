@@ -1,0 +1,16 @@
+*.egg-info
+.cache
+.coverage
+.idea/
+.ipynb_checkpoints/
+.venv/
+.vscode/
+/coverage_html_report
+/tests/.cache
+__pycache__
+build/
+dist/
+docs/build/
+temp/
+.venv/
+/tests/runs/
