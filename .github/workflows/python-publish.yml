@@ -5,10 +5,11 @@ on:
     types: [created]
 
 jobs:
-  deploy:
-
+  pypi-publish:
+    name: upload release to PyPI
     runs-on: ubuntu-latest
-
+    permissions:
+      id-token: write
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
