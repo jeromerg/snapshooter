@@ -19,19 +19,20 @@ def get_file_md5(file_path: str) -> str:
 
 
 @pytest.fixture
-def test_data_root():
+def data_root():
     r = f"{this_file_dir}/temp/{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     print(f"test_data_root={r}")
     return r
 
-def test_main_functionalities(test_data_root):
+
+def test_main_functionalities(data_root):
     snapshooter = Snapshooter(
         src_fs    = fsspec.filesystem("file"),
         src_root  = f"{this_file_dir}/unit_test_data/sample_src",
         snap_fs   = fsspec.filesystem("file"),
-        snap_root = f"{test_data_root}/snap",
+        snap_root = f"{data_root}/snap",
         heap_fs   = fsspec.filesystem("file"),
-        heap_root = f"{test_data_root}/heap",
+        heap_root = f"{data_root}/heap",
     )
     snap, timestamp = snapshooter.generate_snapshot()
     assert timestamp is not None
@@ -61,16 +62,16 @@ def test_main_functionalities(test_data_root):
     # -------------------------------
     restore_snapshooter = Snapshooter(
         src_fs    = fsspec.filesystem("file"),
-        src_root  = f"{test_data_root}/restored",
+        src_root  = f"{data_root}/restored",
         snap_fs   = fsspec.filesystem("file"),
-        snap_root = f"{test_data_root}/snap",
+        snap_root = f"{data_root}/snap",
         heap_fs   = fsspec.filesystem("file"),
-        heap_root = f"{test_data_root}/heap",
+        heap_root = f"{data_root}/heap",
     )
 
     restore_snapshooter.restore_snapshot()
     
-    restored_root = f"{test_data_root}/restored"
+    restored_root = f"{data_root}/restored"
     ls = [str(f.relative_to(restored_root)) for f in Path(restored_root).rglob('*') if f.is_file()]
     ls = [f.replace("\\", "/") for f in ls]
     ls = sorted(ls)
@@ -78,6 +79,6 @@ def test_main_functionalities(test_data_root):
     assert ls[0] == "empty_file.txt"
     assert ls[1] == "subfolder/another_text_file.txt"
     assert ls[2] == "text_file.txt"
-    assert get_file_md5(f"{test_data_root}/restored/{ls[0]}") == "b6f750f20a040a360774725bae513f17"
-    assert get_file_md5(f"{test_data_root}/restored/{ls[1]}") == "d41d8cd98f00b204e9800998ecf8427e"
-    assert get_file_md5(f"{test_data_root}/restored/{ls[2]}") == "41060d3ddfdf63e68fc2bf196f652ee9"
+    assert get_file_md5(f"{data_root}/restored/{ls[0]}") == "b6f750f20a040a360774725bae513f17"
+    assert get_file_md5(f"{data_root}/restored/{ls[1]}") == "d41d8cd98f00b204e9800998ecf8427e"
+    assert get_file_md5(f"{data_root}/restored/{ls[2]}") == "41060d3ddfdf63e68fc2bf196f652ee9"

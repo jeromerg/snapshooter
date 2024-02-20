@@ -383,7 +383,7 @@ class Snapshooter:
                     continue
                 log.debug(f"Saving '{src_file_relative_path}' to '{heap_file_path_relative}'")
                 self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
-                with self.heap_fs.open(heap_file_path, "wb") as heap_file:
+                with self.heap_fs.open(heap_file_path, "wb") as heap_file, gzip.GzipFile(fileobj=heap_file, mode='wb') as heap_file:
                     heap_file.write(content_bytes)
 
         return _convert_snapshot_as_required(snapshot, as_df), before
@@ -533,7 +533,7 @@ class Snapshooter:
             src_file_path = f"{self.src_root}/{file_relative_path}"
             log.debug(f"Copying '{heap_file_path_relative}' to '{file_relative_path}'")
             self.src_fs.makedirs(os.path.dirname(src_file_path), exist_ok=True)
-            with self.heap_fs.open(heap_file_path, "rb") as heap_file:
+            with self.heap_fs.open(heap_file_path, "rb") as heap_file, gzip.GzipFile(fileobj=heap_file, mode='rb') as heap_file:
                 with self.src_fs.open(src_file_path, "wb") as src_file:
                     src_file.write(heap_file.read())
         
