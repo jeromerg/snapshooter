@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import re
+from contextlib import contextmanager
+from io import BufferedReader
 from typing import List, Literal, overload
 import fsspec
 from fsspec import AbstractFileSystem
@@ -15,7 +17,7 @@ from .jsonl_utils import dumps_jsonl, loads_jsonl
 
 log = logging.getLogger(__name__)
 
-
+# noinspection RegExpRedundantEscape
 FMT_PLACEHOLDER_REGEX = re.compile(r"\{[^\}]*?\}")
 DEFAULT_SRC_FS        = fsspec.filesystem("file")
 DEFAULT_SNAP_ROOT     = os.path.normpath(os.path.abspath("./data/backup/snapshots"))
@@ -27,7 +29,7 @@ DEFAULT_HEAP_FS       = fsspec.filesystem("file")
 HEAP_FMT_FN           = lambda md5: f"{md5[:2]}/{md5[2:4]}/{md5[4:6]}/{md5}.gz"
 
 
-def _coerce_fs(fs: AbstractFileSystem|str) -> AbstractFileSystem:
+def _coerce_fs(fs: AbstractFileSystem | str) -> AbstractFileSystem:
     if isinstance(fs, str):
         return fsspec.filesystem(fs)
     elif isinstance(fs, AbstractFileSystem):
@@ -38,6 +40,7 @@ def _coerce_fs(fs: AbstractFileSystem|str) -> AbstractFileSystem:
 
 def _coerce_root_dir(fs: AbstractFileSystem, root: str) -> str:
     root = root.strip()
+    # noinspection PyProtectedMember
     root = fs._strip_protocol(root)
     root = root.replace("\\", "/")
     root = root.rstrip("/")
@@ -46,7 +49,7 @@ def _coerce_root_dir(fs: AbstractFileSystem, root: str) -> str:
     return root
 
 
-def _convert_snapshot_as_required(snapshot: List[dict], as_df: bool) -> List[dict]|pd.DataFrame:
+def _convert_snapshot_as_required(snapshot: List[dict], as_df: bool) -> List[dict] | pd.DataFrame:
     if as_df:
         if isinstance(snapshot, pd.DataFrame):
             if snapshot.index.name == "name":
@@ -71,6 +74,53 @@ def _convert_snapshot_as_required(snapshot: List[dict], as_df: bool) -> List[dic
             raise Exception(f"Unknown type {type(snapshot)}. Accepted: List[dict], pd.DataFrame")
 
 
+class Heap:
+    def __init__(
+        self,
+        heap_fs   : AbstractFileSystem,
+        heap_root : str,
+    ) -> None:
+        """ Create a new Snapshooter instance.
+
+        :param heap_fs: The file system of the heap files.
+        :param heap_root: The root directory of the heap files.
+        """
+        self.heap_fs   = _coerce_fs(heap_fs)
+        self.heap_root = _coerce_root_dir(heap_fs, heap_root)
+        # Get all heap files
+        log.debug(f"List out heap files in {self.heap_fs} / {self.heap_root}")
+        heap_file_paths = self.heap_fs.glob(f"{self.heap_root}/**/*")
+        self.heap_md5s = set([os.path.basename(p) for p in heap_file_paths])
+        log.debug(f"Heap initialized: Found {len(self.heap_md5s)} files in heap")
+
+    def add_file_to_heap(self, f: BufferedReader) -> str:
+        content_bytes           = f.read()
+        md5                     = hashlib.md5(content_bytes).hexdigest()
+        heap_file_path_relative = HEAP_FMT_FN(md5)
+        heap_file_path          = f"{self.heap_root}/{heap_file_path_relative}"
+
+        if md5 in self.heap_md5s:
+            log.debug(f"MD5 '{md5}' already exists in heap, skipping")
+            return md5
+
+        log.debug(f"Saving file with md5 '{md5}' to '{heap_file_path_relative}'")
+        self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
+        with (
+            self.heap_fs.open(heap_file_path, "wb") as heap_file,
+            gzip.GzipFile(fileobj=heap_file, mode='wb') as heap_file
+        ):
+            heap_file.write(content_bytes)
+        self.heap_md5s.add(md5)
+        return md5
+
+    @contextmanager
+    def open(self, md5):
+        heap_file_path_relative = HEAP_FMT_FN(md5)
+        heap_file_path = f"{self.heap_root}/{heap_file_path_relative}"
+        with self.heap_fs.open(heap_file_path, "rb") as heap_file, gzip.GzipFile(fileobj=heap_file, mode='rb') as heap_file:
+            yield heap_file
+
+
 class Snapshooter:
     def __init__(
         self,
@@ -78,8 +128,7 @@ class Snapshooter:
         src_root  : str,
         snap_fs   : AbstractFileSystem,
         snap_root : str,
-        heap_fs   : AbstractFileSystem,
-        heap_root : str,
+        heap      : Heap,
     ) -> None:
         """ Create a new Snapshooter instance.
 
@@ -87,15 +136,13 @@ class Snapshooter:
         :param src_root: The root directory of the source files.
         :param snap_fs: The file system of the snapshot files.
         :param snap_root: The root directory of the snapshot files.
-        :param heap_fs: The file system of the heap files.
-        :param heap_root: The root directory of the heap files.
+        :param heap: The heap instance, that stores the files by their checksum.
         """
         self.src_fs    = _coerce_fs(src_fs)
         self.src_root  = _coerce_root_dir(src_fs, src_root)
         self.snap_fs   = _coerce_fs(snap_fs)
         self.snap_root = _coerce_root_dir(snap_fs, snap_root)
-        self.heap_fs   = _coerce_fs(heap_fs)
-        self.heap_root = _coerce_root_dir(heap_fs, heap_root)
+        self.heap      = heap
 
     def convert_snapshot_timestamp_to_path(self, timestamp: datetime.datetime) -> str:
         """ Convert the given timestamp to a snapshot file path.
@@ -130,8 +177,8 @@ class Snapshooter:
 
     def try_get_snapshot_path(
         self, 
-        before: datetime.datetime|None = None
-    ) -> str|None:
+        before: datetime.datetime | None = None
+    ) -> str | None:
         """ Tries to get the latest snapshot path from the snapshot file system. If before is given, tries to get the latest snapshot path which was created before or at the given timestamp.
 
         :param before: If given, search for the latest snapshot which was created before or at the given timestamp. Default: None
@@ -161,41 +208,47 @@ class Snapshooter:
         log.info(f"Found snapshot '{snapshot_path}'")
         return snapshot_path
 
+    # region overloads: try_read_snapshot
     @overload  # pragma: no cover
-    def try_read_snapshot(self, as_df: Literal[True]) -> pd.DataFrame|None:
+    def try_read_snapshot(self, as_df: Literal[True]) -> pd.DataFrame | None:
         """ Tries to read the latest snapshot from the snapshot file system.
 
         :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
         :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
+
     @overload  # pragma: no cover
-    def try_read_snapshot(self, as_df: Literal[False] = False) -> List[dict]|None:
+    def try_read_snapshot(self, as_df: Literal[False] = False) -> List[dict] | None:
         """ Tries to read the latest snapshot from the snapshot file system.
 
         :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
         :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
+
     @overload  # pragma: no cover
-    def try_read_snapshot(self, before: datetime.datetime, as_df: Literal[True]) -> pd.DataFrame|None:
+    def try_read_snapshot(self, before: datetime.datetime, as_df: Literal[True]) -> pd.DataFrame | None:
         """ Tries to read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
 
-        :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
-        :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
-        """
-        ...
-    @overload  # pragma: no cover
-    def try_read_snapshot(self, before: datetime.datetime, as_df: Literal[False] = False) -> List[dict]|None:
-        """ Tries to read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
-
+        :param before: The latest snapshot from the snapshot file system which was created before or at the given timestamp.
         :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
         :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
 
     @overload  # pragma: no cover
-    def try_read_snapshot(self, snapshot_path: str, as_df: Literal[True]) -> pd.DataFrame|None:
+    def try_read_snapshot(self, before: datetime.datetime, as_df: Literal[False] = False) -> List[dict] | None:
+        """ Tries to read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
+
+        :param before: The latest snapshot from the snapshot file system which was created before or at the given timestamp.
+        :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
+        :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
+        """
+        ...
+
+    @overload  # pragma: no cover
+    def try_read_snapshot(self, snapshot_path: str, as_df: Literal[True]) -> pd.DataFrame | None:
         """ Tries to read the snapshot from the given path.
 
         :param snapshot_path: The path of the snapshot to read.
@@ -203,8 +256,9 @@ class Snapshooter:
         :return: The snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
+
     @overload  # pragma: no cover
-    def try_read_snapshot(self, snapshot_path: str, as_df: Literal[False] = False) -> List[dict]|None:
+    def try_read_snapshot(self, snapshot_path: str, as_df: Literal[False] = False) -> List[dict] | None:
         """ Tries to read the snapshot from the given path.
 
         :param snapshot_path: The path of the snapshot to read.
@@ -212,13 +266,30 @@ class Snapshooter:
         :return: The snapshot as pandas DataFrame or None, if no snapshot was found.
         """
         ...
+
+    @overload
+    def try_read_snapshot(
+        self,
+        snapshot_path: str | None = None,
+        before: datetime.datetime | None = None,
+        as_df=False
+    ) -> dict | pd.DataFrame | None:
+        """ Tries to read the latest snapshot from the snapshot file system. If timestamp is given, tries to read the latest snapshot which was created before or at the given timestamp.
+
+        :param snapshot_path: The path of the snapshot to read. If None, the latest snapshot is read.
+        :param before: If given, read the latest snapshot which was created before or at the given timestamp. Default: None
+        :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
+        :return: The latest snapshot as pandas DataFrame or None, if no snapshot was found.
+        """
+        ...
+    # endregion
 
     def try_read_snapshot(
         self, 
-        snapshot_path: str|None = None, 
-        before: datetime.datetime|None = None,
+        snapshot_path: str | None = None,
+        before: datetime.datetime | None = None,
         as_df = False
-    ) -> dict|pd.DataFrame|None:
+    ) -> dict | pd.DataFrame | None:
         if snapshot_path is None:
             snapshot_path = self.try_get_snapshot_path(before)
             if snapshot_path is None:
@@ -230,6 +301,7 @@ class Snapshooter:
 
         return _convert_snapshot_as_required(latest_snapshot, as_df)
 
+    # region overloads: read_snapshot
     @overload  # pragma: no cover
     def read_snapshot(self, as_df: Literal[True]) -> pd.DataFrame:
         """ Read the latest snapshot from the snapshot file system.
@@ -238,6 +310,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
+
     @overload  # pragma: no cover
     def read_snapshot(self, as_df: Literal[False] = False) -> List[dict]:
         """ Read the latest snapshot from the snapshot file system.
@@ -247,6 +320,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
+
     @overload  # pragma: no cover
     def read_snapshot(self, before: datetime.datetime, as_df: Literal[True]) -> pd.DataFrame:
         """ Read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
@@ -257,6 +331,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
+
     @overload  # pragma: no cover
     def read_snapshot(self, before: datetime.datetime, as_df: Literal[False] = False) -> List[dict]:
         """ Read the latest snapshot from the snapshot file system which was created before or at the given timestamp.
@@ -267,6 +342,7 @@ class Snapshooter:
         :return: The latest snapshot as pandas DataFrame.
         """
         ...
+
     @overload  # pragma: no cover
     def read_snapshot(self, snapshot_path: str, as_df: Literal[True]) -> pd.DataFrame:
         """ Read the snapshot from the given path.
@@ -277,6 +353,7 @@ class Snapshooter:
         :return: The snapshot as pandas DataFrame.
         """
         ...
+
     @overload  # pragma: no cover
     def read_snapshot(self, snapshot_path: str, as_df: Literal[False] = False) -> List[dict]:
         """ Read the snapshot from the given path.
@@ -288,8 +365,31 @@ class Snapshooter:
         """
         ...
 
-    def read_snapshot(self, snapshot_path: str|None = None, before: datetime.datetime|None = None, as_df = False) -> List[dict]|pd.DataFrame:
-        latest_snapshot = self.try_read_snapshot(snapshot_path, before, as_df)
+    @overload
+    def read_snapshot(
+        self,
+        snapshot_path: str | None = None,
+        before: datetime.datetime | None = None,
+        as_df = False
+    ) -> List[dict] | pd.DataFrame:
+        """ Read the latest snapshot from the snapshot file system. If timestamp is given, read the latest snapshot which was created before or at the given timestamp.
+
+        :param snapshot_path: The path of the snapshot to read. If None, the latest snapshot is read.
+        :param before: If given, read the latest snapshot which was created before or at the given timestamp. Default: None
+        :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
+        :raises Exception: If no snapshot was found.
+        :return: The latest snapshot as pandas DataFrame.
+        """
+        ...
+    # endregion
+
+    def read_snapshot(
+        self,
+        snapshot_path: str | None = None,
+        before: datetime.datetime | None = None,
+        as_df = False
+    ) -> List[dict] | pd.DataFrame:
+        latest_snapshot = self.try_read_snapshot(snapshot_path=snapshot_path, before=before, as_df=as_df)
         if latest_snapshot is None:
             raise Exception(f"No snapshot found in {self.snap_fs} / {self.snap_root}")        
         return latest_snapshot
@@ -308,7 +408,7 @@ class Snapshooter:
             file_info["name"] = regex.sub("", file_info["name"])
 
         # sort by name (relative path to root)
-        src_file_infos.sort(key=lambda file_info: file_info["name"])
+        src_file_infos.sort(key=lambda fi: fi["name"])
         
         return src_file_infos
 
@@ -317,37 +417,46 @@ class Snapshooter:
         src_file_infos: List[dict],
         latest_snapshot: List[dict]
     ):
+        """ This function uses a previous snapshot and tries to find in it the same file name, then verifies if
+        the file is the same by using file system specific way to identify same file (e.g. ETAG) and if it is the same
+        it copies the md5 from the previous snapshot to the current file info."""
         # get md5 getter function depending on the file system type            
         md5_getter = get_md5_getter(self.src_fs)
 
         # convert list to dict for faster lookup
-        latest_snapshot_by_filename = {file_info["name"]: file_info for file_info in latest_snapshot}
+        latest_snapshot_file_info_by_file_name = {file_info["name"]: file_info for file_info in latest_snapshot}
 
         # try to get md5 from file info and latest snapshot
         for src_file_info in src_file_infos:
-            md5 = md5_getter(src_file_info, latest_snapshot_by_filename)
+            md5 = md5_getter(src_file_info, latest_snapshot_file_info_by_file_name)
             if md5 is not None:
                 src_file_info["md5"] = md5
 
+    # region overloads: generate_snapshot
     @overload  # pragma: no cover
-    def generate_snapshot(self, as_df:Literal[False]=False) -> tuple[List[dict], datetime.datetime]:
+    def generate_snapshot(self, download_missing_files: bool = True, as_df: Literal[False] = False) -> tuple[List[dict], datetime.datetime]:
         """Generate a snapshot of the src file system.
 
+        :param download_missing_files: If True (default), download missing files to the heap. If False, do not
+               download missing files to the heap, except if they are needed to calculate the md5.
         :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
         :return: The snapshot as pandas DataFrame or list of dicts and the timestamp of the snapshot.
         """
         ...
 
     @overload  # pragma: no cover
-    def generate_snapshot(self, as_df=Literal[True]) -> tuple[pd.DataFrame, datetime.datetime]:
+    def generate_snapshot(self, download_missing_files: bool = True, as_df=Literal[True]) -> tuple[pd.DataFrame, datetime.datetime]:
         """Generate a snapshot of the src file system.
 
+        :param download_missing_files: If True (default), download missing files to the heap. If False, do not
+               download missing files to the heap, except if they are needed to calculate the md5.
         :param as_df: If False (default), return the snapshot as list of dicts. If True, return the snapshot as pandas DataFrame.
         :return: The snapshot as pandas DataFrame or list of dicts and the timestamp of the snapshot.
         """
         ...
-        
-    def generate_snapshot(self, as_df=False) -> tuple[List[dict]|pd.DataFrame, datetime.datetime]:
+    # region overloads: generate_snapshot
+
+    def generate_snapshot(self, download_missing_files: bool = True, as_df=False) -> tuple[List[dict] | pd.DataFrame, datetime.datetime]:
         before = datetime.datetime.utcnow()
         log.info(f"Create Snapshot with timestamp = '{before}'")
 
@@ -358,39 +467,42 @@ class Snapshooter:
         snapshot = self._generate_snapshot_without_md5()
         self._try_enrich_src_file_infos_with_md5_without_downloading(snapshot, latest_snapshot)
 
-        remaining_file_infos_without_md5 = [file_info for file_info in snapshot if "md5" not in file_info or file_info["md5"] is None]
-        
-        if len(remaining_file_infos_without_md5) > 0:
-            log.info(f"Downloading {len(remaining_file_infos_without_md5)} files with missing md5")
+        snapshot_files_by_name = {file_info["name"]: file_info for file_info in snapshot}
+
+        file_names_without_md5 = {fi["name"] for fi in snapshot if "md5" not in fi or fi["md5"] is None}
+        if len(file_names_without_md5) > 0:
+            log.info(f"Found {len(file_names_without_md5)} files with missing md5... downloads required")
+
+        if download_missing_files:
+            file_names_missings = {fi["name"] for fi in snapshot if "md5" not in fi or fi["md5"] not in self.heap.heap_md5s}
+            if len(file_names_missings) > 0:
+                log.info(f"Found {len(file_names_missings)} missing files not in heap... downloads required")
         else:
-            log.info(f"No missing md5s found in src file infos")
-            
-        for src_file_info in remaining_file_infos_without_md5:
-            src_file_relative_path = src_file_info["name"]
+            file_names_missings = set()
+
+        all_file_names_to_download = file_names_without_md5 | file_names_missings
+        if len(all_file_names_to_download) > 0:
+            log.info(f"Downloading {len(all_file_names_to_download)} files to heap")
+
+        for src_file_relative_path in all_file_names_to_download:
+            src_file_info = snapshot_files_by_name[src_file_relative_path]
             src_file_path = f"{self.src_root}/{src_file_relative_path}"
             log.debug(f"Downloading '{src_file_relative_path}'")
             with self.src_fs.open(src_file_path, "rb") as f:
-                content_bytes = f.read()
-                # calculate md5
-                src_file_md5 = hashlib.md5(content_bytes).hexdigest()
-                # store the value in the dict
+                src_file_md5 = self.heap.add_file_to_heap(f)
+
+            # store the value in the metadata dict
+            if "md5" in src_file_info:
+                if src_file_info["md5"] != src_file_md5:
+                    raise Exception(f"MD5 mismatch for '{src_file_relative_path}' between snapshot metadata and downloaded file")
+            else:
                 src_file_info["md5"] = src_file_md5
-                # save the file to dst heap, if it does not exist
-                heap_file_path_relative = HEAP_FMT_FN(src_file_md5)
-                heap_file_path = f"{self.heap_root}/{heap_file_path_relative}"
-                if self.heap_fs.exists(heap_file_path):
-                    log.debug(f"MD5 '{src_file_md5}' already exists in heap, skipping")
-                    continue
-                log.debug(f"Saving '{src_file_relative_path}' to '{heap_file_path_relative}'")
-                self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
-                with self.heap_fs.open(heap_file_path, "wb") as heap_file, gzip.GzipFile(fileobj=heap_file, mode='wb') as heap_file:
-                    heap_file.write(content_bytes)
 
         return _convert_snapshot_as_required(snapshot, as_df), before
 
     def save_snapshot(
         self,
-        snapshot: List[dict]|pd.DataFrame,
+        snapshot: List[dict] | pd.DataFrame,
         snapshot_timestamp: datetime
     ) -> str:
         """Save the given snapshot to the snapshot file system.
@@ -411,11 +523,12 @@ class Snapshooter:
         log.info(f"Saved snapshot")
         return new_snapshot_path
 
+    # region overloads: compare_snapshots
     @overload  # pragma: no cover
     def compare_snapshots(
         self,
-        left_snapshot: List[dict]|pd.DataFrame,
-        right_snapshot: List[dict]|pd.DataFrame,
+        left_snapshot: List[dict] | pd.DataFrame,
+        right_snapshot: List[dict] | pd.DataFrame,
         as_df : Literal[True]
     ) -> pd.DataFrame:
         """Compare two snapshots and return the diff.
@@ -426,13 +539,12 @@ class Snapshooter:
         :return: The diff as pandas DataFrame or list of dicts.
         """
         ...
-        
-    
+
     @overload  # pragma: no cover
     def compare_snapshots(
         self,
-        left_snapshot: List[dict]|pd.DataFrame,
-        right_snapshot: List[dict]|pd.DataFrame,
+        left_snapshot: List[dict] | pd.DataFrame,
+        right_snapshot: List[dict] | pd.DataFrame,
         as_df : Literal[False] = False
     ) -> List[dict]:
         """Compare two snapshots and return the diff.
@@ -443,14 +555,14 @@ class Snapshooter:
         :return: The diff as pandas DataFrame or list of dicts.
         """
         ...
-        
+    # endregion
     
     def compare_snapshots(
         self,
-        left_snapshot: List[dict]|pd.DataFrame,
-        right_snapshot: List[dict]|pd.DataFrame,
+        left_snapshot: List[dict] | pd.DataFrame,
+        right_snapshot: List[dict] | pd.DataFrame,
         as_df = False
-    ) -> pd.DataFrame|List[dict]:
+    ) -> pd.DataFrame | List[dict]:
         left_snapshot  = _convert_snapshot_as_required(left_snapshot, True)
         right_snapshot = _convert_snapshot_as_required(right_snapshot, True)
         
@@ -477,16 +589,17 @@ class Snapshooter:
 
         return df if as_df else df.to_dict("records")
 
+    # region overloads: restore_snapshot
     @overload  # pragma: no cover
     def restore_snapshot(self, before: datetime.datetime = None):
         """Restore the latest snapshot. If timestamp is given, restore the snapshot which was created before or at the given timestamp.
 
-        :param timestamp: The timestamp of the snapshot to restore. If None, the latest snapshot is restored.
+        :param before: If given, restore the latest snapshot which was created before or at the given timestamp. Default: None
         """
         ...
 
     @overload  # pragma: no cover
-    def restore_snapshot(self, snapshot_to_restore: List[dict]|pd.DataFrame):
+    def restore_snapshot(self, snapshot_to_restore: List[dict] | pd.DataFrame):
         """Restore the given snapshot.
 
         :param snapshot_to_restore: The snapshot to restore.
@@ -494,17 +607,18 @@ class Snapshooter:
         ...
 
     @overload  # pragma: no cover
-    def restore_snapshot(self, diff: List[dict]|pd.DataFrame):
+    def restore_snapshot(self, diff: List[dict] | pd.DataFrame):
         """Restore the left snapshot by applying the given diff to the right snapshot. 
 
         :param diff: The diff to apply.
         """
         ...
+    # endregion
 
     def restore_snapshot(
         self,
-        snapshot_to_restore: List[dict]|pd.DataFrame = None,
-        diff: List[dict]|pd.DataFrame = None,
+        snapshot_to_restore: List[dict] | pd.DataFrame = None,
+        diff: List[dict] | pd.DataFrame = None,
         before: datetime.datetime = None
     ):
         if isinstance(diff, list):
@@ -528,12 +642,10 @@ class Snapshooter:
         for file_relative_path in sorted(only_left | different):
             file_info_row = diff.loc[file_relative_path, :]
             md5 = file_info_row["md5_left"]
-            heap_file_path_relative = HEAP_FMT_FN(md5)
-            heap_file_path = f"{self.heap_root}/{heap_file_path_relative}"
             src_file_path = f"{self.src_root}/{file_relative_path}"
-            log.debug(f"Copying '{heap_file_path_relative}' to '{file_relative_path}'")
+            log.debug(f"Copying file with md5 '{md5}' to '{file_relative_path}'")
             self.src_fs.makedirs(os.path.dirname(src_file_path), exist_ok=True)
-            with self.heap_fs.open(heap_file_path, "rb") as heap_file, gzip.GzipFile(fileobj=heap_file, mode='rb') as heap_file:
+            with self.heap.open(md5) as heap_file:
                 with self.src_fs.open(src_file_path, "wb") as src_file:
                     src_file.write(heap_file.read())
         

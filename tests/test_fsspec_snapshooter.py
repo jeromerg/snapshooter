@@ -1,14 +1,14 @@
-from datetime import datetime
-import glob
-from gzip import GzipFile
 import hashlib
-import json
 import os
+from datetime import datetime
+from gzip import GzipFile
 from pathlib import Path
+
 import fsspec
 import pytest
 
 from snapshooter import Snapshooter, jsonl_utils
+from snapshooter.snapshooter import Heap
 
 this_file_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -26,13 +26,16 @@ def data_root():
 
 
 def test_main_functionalities(data_root):
+    heap = Heap(
+        heap_fs=fsspec.filesystem("file"),
+        heap_root=f"{data_root}/heap",
+    )
     snapshooter = Snapshooter(
         src_fs    = fsspec.filesystem("file"),
         src_root  = f"{this_file_dir}/unit_test_data/sample_src",
         snap_fs   = fsspec.filesystem("file"),
         snap_root = f"{data_root}/snap",
-        heap_fs   = fsspec.filesystem("file"),
-        heap_root = f"{data_root}/heap",
+        heap      = heap,
     )
     snap, timestamp = snapshooter.generate_snapshot()
     assert timestamp is not None
@@ -60,13 +63,16 @@ def test_main_functionalities(data_root):
     assert reloaded_snap == snap
 
     # -------------------------------
+    heap = Heap(
+        heap_fs   = fsspec.filesystem("file"),
+        heap_root = f"{data_root}/heap",
+    )
     restore_snapshooter = Snapshooter(
         src_fs    = fsspec.filesystem("file"),
         src_root  = f"{data_root}/restored",
         snap_fs   = fsspec.filesystem("file"),
         snap_root = f"{data_root}/snap",
-        heap_fs   = fsspec.filesystem("file"),
-        heap_root = f"{data_root}/heap",
+        heap      = heap,
     )
 
     restore_snapshooter.restore_snapshot()
