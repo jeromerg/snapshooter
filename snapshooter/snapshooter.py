@@ -5,14 +5,17 @@ import json
 import logging
 import os
 import re
+import threading
+import time
+import traceback
 from contextlib import contextmanager
 from io import BufferedReader
-from typing import List, Dict
+from typing import List, Dict, Set
 
 import fsspec
 import pandas as pd
 from fsspec import AbstractFileSystem
-
+import concurrent.futures
 from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key
 from .jsonl_utils import dumps_jsonl, loads_jsonl
 
@@ -107,10 +110,10 @@ class Heap:
         self.heap_fs   = _coerce_fs(heap_fs)
         self.heap_root = _coerce_root_dir(heap_fs, heap_root)
         # Get all heap files
-        log.debug(f"List out heap files in {self.heap_fs} / {self.heap_root}")
+        log.info(f"List out heap files in {self.heap_fs} / {self.heap_root}")
         heap_file_paths = self.heap_fs.glob(f"{self.heap_root}/**/*")
         self.heap_md5s = set([os.path.basename(p) for p in heap_file_paths])
-        log.debug(f"Heap initialized: Found {len(self.heap_md5s)} files in heap")
+        log.info(f"Heap initialized: Found {len(self.heap_md5s)} files in heap")
 
     def add_file_to_heap(self, f: BufferedReader) -> str:
         content_bytes           = f.read()
@@ -148,6 +151,7 @@ class Snapshooter:
         snap_fs   : AbstractFileSystem,
         snap_root : str,
         heap      : Heap,
+        parallel_downloaders: int = 10
     ) -> None:
         """ Create a new Snapshooter instance.
 
@@ -162,6 +166,7 @@ class Snapshooter:
         self.snap_fs   = _coerce_fs(snap_fs)
         self.snap_root = _coerce_root_dir(snap_fs, snap_root)
         self.heap      = heap
+        self.parallel_downloaders = parallel_downloaders
 
     def convert_snapshot_timestamp_to_path(self, timestamp: datetime.datetime) -> str:
         """ Convert the given timestamp to a snapshot file path.
@@ -264,7 +269,7 @@ class Snapshooter:
         return latest_snapshot
 
     def _generate_snapshot_without_md5(self) -> List[dict]:
-        log.info(f"List out src files in {self.src_fs} / {self.src_root}")
+        log.info(f"List out src files in {self.src_fs} / {self.src_root} (may last long)")
         src_file_infos: list = list(self.src_fs.find(self.src_root, withdirs=False, detail=True).values())
         log.info(f"Found {len(src_file_infos)} src files")
 
@@ -329,19 +334,15 @@ class Snapshooter:
         if len(all_file_names_to_download) > 0:
             log.info(f"Downloading {len(all_file_names_to_download)} files to heap")
 
-        for src_file_relative_path in all_file_names_to_download:
-            src_file_info = snapshot_files_by_name[src_file_relative_path]
-            src_file_path = f"{self.src_root}/{src_file_relative_path}"
-            log.debug(f"Downloading '{src_file_relative_path}'")
-            with self.src_fs.open(src_file_path, "rb") as f:
-                src_file_md5 = self.heap.add_file_to_heap(f)
-
-            # store the value in the metadata dict
-            if "md5" in src_file_info:
-                if src_file_info["md5"] != src_file_md5:
-                    raise Exception(f"MD5 mismatch for '{src_file_relative_path}' between snapshot metadata and downloaded file")
-            else:
-                src_file_info["md5"] = src_file_md5
+            downloader = ParallelDownloaderToHeap(
+                src_fs=self.src_fs,
+                src_root=self.src_root,
+                snapshot_files_by_name=snapshot_files_by_name,
+                all_file_names_to_download=all_file_names_to_download,
+                heap=self.heap,
+                parallel_downloaders=self.parallel_downloaders,
+            )
+            downloader.download_files()
 
         if save_snapshot:
             self._save_snapshot(snapshot, timestamp)
@@ -415,3 +416,80 @@ class Snapshooter:
             src_file_path = f"{self.src_root}/{file_relative_path}"
             log.debug(f"Deleting '{file_relative_path}'")
             self.src_fs.rm(src_file_path)
+
+
+class ParallelDownloaderToHeap:
+    def __init__(
+        self,
+        src_fs: AbstractFileSystem,
+        src_root: str,
+        snapshot_files_by_name: Dict[str, dict],
+        all_file_names_to_download: Set[str],
+        heap: Heap,
+        parallel_downloaders: int,
+    ):
+        self.src_fs                 = src_fs
+        self.src_root               = src_root
+        self.snapshot_files_by_name = snapshot_files_by_name
+        self.all_file_names_to_download = all_file_names_to_download
+        self.heap                   = heap
+        self.parallel_downloaders   = parallel_downloaders
+        self.download_count         = 0
+        self.errors                 = []  # List to store errors
+        self.lock                   = threading.Lock()
+
+    def _download_file(self, src_file_relative_path):
+        try:
+            src_file_info = self.snapshot_files_by_name[src_file_relative_path]
+            src_file_path = f"{self.src_root}/{src_file_relative_path}"
+            log.debug(f"Downloading '{src_file_relative_path}'")
+            with self.src_fs.open(src_file_path, "rb") as f:
+                src_file_md5 = self.heap.add_file_to_heap(f)
+
+            if "md5" in src_file_info:
+                if src_file_info["md5"] != src_file_md5:
+                    error_message = f"MD5 mismatch for '{src_file_relative_path}' between snapshot metadata and downloaded file"
+                    log.error(error_message)
+                    with self.lock:
+                        self.errors.append(error_message)
+            else:
+                src_file_info["md5"] = src_file_md5
+
+        except Exception as e:
+            error_message = f"Error downloading {src_file_relative_path}: {e}"
+            # add full stacktrace to the error message
+            error_message += "\n" + traceback.format_exc()
+            log.error(error_message)
+            with self.lock:
+                self.errors.append(error_message)
+        finally:
+            with self.lock:
+                self.download_count += 1
+
+    def _log_progress(self, total_files):
+        while self.download_count < total_files:
+            time.sleep(10)
+            count = self.download_count
+            if count < total_files:
+                log.debug(f"Progress: {count}/{total_files} files downloaded.")
+        log.debug("All files downloaded.")
+
+    def download_files(self):
+        total_files = len(self.all_file_names_to_download)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_downloaders) as executor:
+            # Start logging progress in a separate thread
+            log_thread = threading.Thread(target=self._log_progress, args=(total_files,))
+            log_thread.start()
+
+            # Submit all download tasks to the executor
+            futures = [executor.submit(self._download_file, src_file_relative_path) for src_file_relative_path in self.all_file_names_to_download]
+            # Wait for all futures to complete
+            concurrent.futures.wait(futures)
+
+        # Ensure the logging thread also completes
+        log_thread.join()
+
+        # Check if there were any errors during downloads
+        if self.errors:
+            error_summary = "\n---------------------------\n".join(self.errors)
+            raise Exception(f"Errors occurred during file downloads:\n{error_summary}")
