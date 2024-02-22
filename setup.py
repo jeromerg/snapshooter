@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="snapshooter",
-    version="0.0.26",
+    version="0.0.27",
     author="jeromerg",
     author_email="jeromerg@gmx.net",
     description="Provides a set of utilities for comparing and backing up data on different filesystems",

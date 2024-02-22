@@ -471,8 +471,8 @@ class ParallelDownloaderToHeap:
             time.sleep(10)
             count = self.download_count
             if count < total_files:
-                log.debug(f"Progress: {count}/{total_files} files downloaded.")
-        log.debug("All files downloaded.")
+                log.info(f"Progress: {count}/{total_files} files downloaded.")
+        log.info("All files downloaded.")
 
     def download_files(self):
         total_files = len(self.all_file_names_to_download)
