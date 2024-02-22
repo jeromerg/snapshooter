@@ -37,7 +37,7 @@ def test_main_functionalities(data_root):
         snap_root = f"{data_root}/snap",
         heap      = heap,
     )
-    snap, timestamp = snapshooter.generate_snapshot()
+    snap, timestamp = snapshooter.make_snapshot()
     assert timestamp is not None
     assert snap is not None
     assert isinstance(timestamp, datetime)
@@ -51,7 +51,7 @@ def test_main_functionalities(data_root):
     assert snap[1]["md5" ] == "d41d8cd98f00b204e9800998ecf8427e"
     assert snap[2]["md5" ] == "41060d3ddfdf63e68fc2bf196f652ee9"
     
-    snapshot_path = snapshooter.save_snapshot(snap, timestamp)
+    snapshot_path = snapshooter._save_snapshot(snap, timestamp)
     
     print(f"snapshot_path={snapshot_path}")
     

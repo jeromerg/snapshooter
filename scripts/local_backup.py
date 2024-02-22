@@ -44,7 +44,7 @@ log.info(f"{SNAP_STORAGE_OPTIONS=}, {SNAP_ROOT=}")
 # # BACKUP
 
 # %%
-fsspec_snapshot.generate_snapshot(SRC_ROOT, src_fs, SNAP_ROOT, snap_fs, HEAP_ROOT, heap_fs)
+fsspec_snapshot.make_snapshot(SRC_ROOT, src_fs, SNAP_ROOT, snap_fs, HEAP_ROOT, heap_fs)
 
 # %% [markdown]
 # # RESTORE

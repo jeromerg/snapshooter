@@ -15,20 +15,20 @@ from snapshooter import Snapshotter
 
 # Create a snapshotter object
 snapshotter = Snapshooter(
-    src_fs    = fsspec.filesystem("file"),
-    src_root  = f"./data/restored",
-    snap_fs   = fsspec.filesystem("file"),
-    snap_root = f"./data/snap",
-    heap_fs   = fsspec.filesystem("file"),
-    heap_root = f"./data/heap",
+  src_fs=fsspec.filesystem("file"),
+  src_root=f"./data/restored",
+  snap_fs=fsspec.filesystem("file"),
+  snap_root=f"./data/snap",
+  heap_fs=fsspec.filesystem("file"),
+  heap_root=f"./data/heap",
 )
 
 # Generate a snapshot of the current state of the source file system
-snapshot, timestamp = snapshooter.generate_snapshot()
+snapshot, timestamp = snapshooter.make_snapshot()
 # As a result, the files are copied from the source file system to the heap file system and the snapshot is created in memory
 
 # Save the snapshot to the snapshot file system
-snapshooter.save_snapshot(snapshot, timestamp)
+snapshooter._save_snapshot(snapshot, timestamp)
 
 # Restore the snapshot from the snapshot file system to the source file system
 restore_snapshooter.restore_snapshot(snapshot)
