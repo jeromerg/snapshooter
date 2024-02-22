@@ -8,9 +8,10 @@ import re
 import threading
 import time
 import traceback
+import uuid
 from contextlib import contextmanager
 from io import BufferedReader
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Callable
 
 import fsspec
 import pandas as pd
@@ -31,6 +32,7 @@ SNAP_PATH_FMT         = f"{{timestamp:%Y}}/{{timestamp:%m}}/{{timestamp:{SNAP_TI
 DEFAULT_HEAP_ROOT     = os.path.normpath(os.path.abspath("./data/backup/heap"))
 DEFAULT_HEAP_FS       = fsspec.filesystem("file")
 HEAP_FMT_FN           = lambda md5: f"{md5[:2]}/{md5[2:4]}/{md5[4:6]}/{md5}.gz"
+BLOCK_SIZE            = 8 * 1024 * 1024  # 8MB
 
 
 def _coerce_fs(fs: AbstractFileSystem | str) -> AbstractFileSystem:
@@ -111,29 +113,50 @@ class Heap:
         self.heap_root = _coerce_root_dir(heap_fs, heap_root)
         # Get all heap files
         log.info(f"List out heap files in {self.heap_fs} / {self.heap_root}")
-        heap_file_paths = self.heap_fs.glob(f"{self.heap_root}/**/*")
+        heap_file_paths = self.heap_fs.glob(f"{self.heap_root}/**/*.gz")
         self.heap_md5s = set([os.path.basename(p) for p in heap_file_paths])
         log.info(f"Heap initialized: Found {len(self.heap_md5s)} files in heap")
 
-    def add_file_to_heap(self, f: BufferedReader) -> str:
-        content_bytes           = f.read()
-        md5                     = hashlib.md5(content_bytes).hexdigest()
-        heap_file_path_relative = HEAP_FMT_FN(md5)
-        heap_file_path          = f"{self.heap_root}/{heap_file_path_relative}"
+    def add_file_to_heap(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
+        temp_file_path = f"{self.heap_root}/temp/{uuid.uuid4()}.gz"
+        self.heap_fs.makedirs(f"{self.heap_root}/temp", exist_ok=True)
+        md5_digester = hashlib.md5()
+        try:
+            with (
+                self.heap_fs.open(temp_file_path, "wb") as temp_file,
+                gzip.GzipFile(fileobj=temp_file, mode='wb') as temp_file
+            ):
+                while True:
+                    check_interrupted_fn()
+                    block = f.read(BLOCK_SIZE)
+                    if not block:
+                        break
+                    temp_file.write(block)
+                    md5_digester.update(block)
 
-        if md5 in self.heap_md5s:
-            log.debug(f"MD5 '{md5}' already exists in heap, skipping")
+            md5 = md5_digester.hexdigest()
+
+            # move temp file to heap
+            heap_file_path_relative = HEAP_FMT_FN(md5)
+            heap_file_path          = f"{self.heap_root}/{heap_file_path_relative}"
+
+            if md5 in self.heap_md5s:
+                log.debug(f"MD5 '{md5}' already exists in heap, skipping")
+                return md5
+
+            log.debug(f"Saving file with md5 '{md5}' to '{heap_file_path_relative}'")
+            self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
+            self.heap_fs.mv(temp_file_path, heap_file_path)
+            self.heap_md5s.add(md5)
             return md5
-
-        log.debug(f"Saving file with md5 '{md5}' to '{heap_file_path_relative}'")
-        self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
-        with (
-            self.heap_fs.open(heap_file_path, "wb") as heap_file,
-            gzip.GzipFile(fileobj=heap_file, mode='wb') as heap_file
-        ):
-            heap_file.write(content_bytes)
-        self.heap_md5s.add(md5)
-        return md5
+        except:
+            # if something went wrong, the temp file may still exist and should be removed
+            try:
+                self.heap_fs.rm(temp_file_path)
+                log.debug(f"Removed temp file '{temp_file_path}'")
+            except Exception as e:
+                log.exception(f"Error removing temp file '{temp_file_path}'")
+            raise
 
     @contextmanager
     def open(self, md5):
@@ -437,14 +460,20 @@ class ParallelDownloaderToHeap:
         self.download_count         = 0
         self.errors                 = []  # List to store errors
         self.lock                   = threading.Lock()
+        self.is_interrupted         = False
+
+    def check_interrupted(self):
+        if self.is_interrupted:
+            raise InterruptedError("Interrupted properly")
 
     def _download_file(self, src_file_relative_path):
         try:
             src_file_info = self.snapshot_files_by_name[src_file_relative_path]
             src_file_path = f"{self.src_root}/{src_file_relative_path}"
             log.debug(f"Downloading '{src_file_relative_path}'")
+            self.check_interrupted()
             with self.src_fs.open(src_file_path, "rb") as f:
-                src_file_md5 = self.heap.add_file_to_heap(f)
+                src_file_md5 = self.heap.add_file_to_heap(f, self.check_interrupted)
 
             if "md5" in src_file_info:
                 if src_file_info["md5"] != src_file_md5:
@@ -469,6 +498,7 @@ class ParallelDownloaderToHeap:
     def _log_progress(self, total_files):
         while self.download_count < total_files:
             time.sleep(10)
+            self.check_interrupted()
             count = self.download_count
             if count < total_files:
                 log.info(f"Progress: {count}/{total_files} files downloaded.")
@@ -478,13 +508,19 @@ class ParallelDownloaderToHeap:
         total_files = len(self.all_file_names_to_download)
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_downloaders) as executor:
             # Start logging progress in a separate thread
-            log_thread = threading.Thread(target=self._log_progress, args=(total_files,))
+            log_thread = threading.Thread(target=self._log_progress, args=(total_files,), daemon=True)
             log_thread.start()
 
             # Submit all download tasks to the executor
             futures = [executor.submit(self._download_file, src_file_relative_path) for src_file_relative_path in self.all_file_names_to_download]
             # Wait for all futures to complete
-            concurrent.futures.wait(futures)
+            try:
+                concurrent.futures.wait(futures)
+            except KeyboardInterrupt:
+                self.is_interrupted = True
+                log.info("Download interrupted by user.")
+                executor.shutdown(wait=False)
+                raise
 
         # Ensure the logging thread also completes
         log_thread.join()
