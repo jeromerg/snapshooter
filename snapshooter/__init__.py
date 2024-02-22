@@ -1,3 +1,4 @@
 from .snapshooter import (
-    Snapshooter
+    Snapshooter,
+    Heap
 )
