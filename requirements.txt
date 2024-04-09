@@ -8,3 +8,4 @@ pytest
 python-dotenv
 coverage
 ipykernel
+typer[all]

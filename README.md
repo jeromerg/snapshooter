@@ -1,6 +1,15 @@
 # Snapshooter (fsspec folder backup and restore tooling)
 
-Provides a set of utilities for diffing and syncing files between two fsspec file systems and performing efficient incremental backups.
+Snapshooter is a tool to backup and restore a folder in an fsspec file system. It is designed to be used with the fsspec file system library, which provides a unified interface to various file systems (e.g. local, azure, s3, ...).
+
+Key features:
+- Backup side is decomposed into two parts: The snapshots and the heap
+  - Snapshots: The snapshots store the file information as provided by the fsspec file system, with two transformations: 
+    The file name is changed to be relative to the `src_root` folder and an additional `md5` field is added, containing
+    the md5 hash of the file contents. This allows for efficient diffing of files.
+  - Heap: The heap stores the file contents into file with the md5 hash of the file as the file name. This allows 
+    for efficient deduplication of files.
+- Efficient incremental backups: Only files that are unknown are copied to the heap file system.
 
 ## Installation
 
@@ -10,49 +19,71 @@ pip install snapshooter
 
 ## Usage
 
-```python
-from snapshooter import Snapshotter
+### CLI
 
-# Create a snapshotter object
-snapshotter = Snapshooter(
-  src_fs=fsspec.filesystem("file"),
-  src_root=f"./data/restored",
-  snap_fs=fsspec.filesystem("file"),
-  snap_root=f"./data/snap",
-  heap_fs=fsspec.filesystem("file"),
-  heap_root=f"./data/heap",
-)
+#### make a snapshot
 
-# Generate a snapshot of the current state of the source file system
-snapshot, timestamp = snapshooter.make_snapshot()
-# As a result, the files are copied from the source file system to the heap file system and the snapshot is created in memory
-
-# Save the snapshot to the snapshot file system
-snapshooter._save_snapshot(snapshot, timestamp)
-
-# Restore the snapshot from the snapshot file system to the source file system
-restore_snapshooter.restore_snapshot(snapshot)
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/sample_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
+  make-snapshot
 ```
 
-with the following parameters:
+#### restore the latest snapshot 
 
-- `src_fs`: The file system to be backed up
-- `src_root`: The root folder in the source file system to be backed up
-- `snap_fs`: The file system to store the snapshots in - the snapshots store the file information as provided by the fsspec file system. Two changes are applied:
-  - The file name is changed to be relative to the `src_root` folder
-  - An additional `md5` field is added, containing the md5 hash of the file contents. This allows for efficient diffing of files.
-- `snap_root`: The root folder in the snapshot file system to store the snapshots in
-- `heap_fs`: The file system to store the heap in - the heap stores the file contents into file with the md5 hash of the file as the file name. This allows for efficient deduplication of files.
-- `heap_root`: The root folder in the heap file system to store the heap in
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/restored_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
+  restore-snapshot
+```
+  
+#### restore the latest snapshot before or at a given timestamp
+
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/restored_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
+  restore-snapshot \
+  --latest 2021-09-01T00:00:00  
+```
+  
+#### support for storage options
+
+See accepted syntax directly in the adlfs documentation: https://pypi.org/project/adlfs/.
+
+The usual way, is to first login with az cli, then use the CLI
+
+```bash
+az login
+# ...
+
+snapshooter \
+  --file-root az://file-container/file-root \
+  --heap-root az://heap-container/heap-root \
+  --snap-root az://snap-container/snap-root \
+  --file-storage-options '{"account_name": "fileaccountname"}' \
+  --heap-storage-options '{"account_name": "heapaccountname"}' \
+  --snap-storage-options '{"account_name": "snapaccountname"}' \
+  make-snapshot
+```
+
+### Python
+
+See the CLI implementation [here](snapshooter/cli.py) for an example of how to use the `Snapshooter` class.
 
 ## Supported file systems
 
-The current version has been developed and tested with local and azure file systems. If you have a use case for another file system, please look at `fsspec_utils.py / import get_md5_getter`: You will need to implement a new `FSSpecMD5Getter` function for your file system and add it to the `md5_getter_by_fs_protocol` dictionary. Pull requests are welcome.
+The current version has been developed and tested with local and azure file systems. 
 
-## About the delta implementation
+For other file systems: a single function needs to be implemented and added to the 
+`md5_getter_by_fs_protocol` dictionary in [fsspec_utils.py](snapshooter/fsspec_utils.py). This function takes as input
+the current metadata of a file and the latest snapshot and should return the md5 hash of the file contents if it can be
+retrieved without downloading the file. If the md5 hash cannot be retrieved, the function should return `None` and the
+file will be downloaded.
 
-The `snapshooter.generate_snapshot` tries to avoid copying files from the source file system to the heap file system by checking whether a file with the same md5 hash exists in the heap file system. If a file is found, then the src file is not copied to the heap file system. This allows for efficient incremental backups.
-
-In the azure file system, the md5 hash of the file contents is not always available. In that case, the file is downloaded the first time and the md5 hash is calculated and stored in the snapshot. The subsequent calls to `snapshooter.generate_snapshot` will then use the `etag` attribute of the file (which is always available) and compare it with the value in the previous snapshot: If the `etag` matches, the file is not downloaded and the md5 hash of the previous snapshot is reused. This allows for efficient incremental backups.
-
-In the local file system, the md5 is basically not available. The previous incremental backups is also used here. But instead of the `etag` attribute, the `mtime` attribute is used.
+**Pull requests are welcome.**

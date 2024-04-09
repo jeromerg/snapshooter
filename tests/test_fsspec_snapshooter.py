@@ -31,8 +31,8 @@ def test_main_functionalities(data_root):
         heap_root=f"{data_root}/heap",
     )
     snapshooter = Snapshooter(
-        src_fs    = fsspec.filesystem("file"),
-        src_root  = f"{this_file_dir}/unit_test_data/sample_src",
+        file_fs= fsspec.filesystem("file"),
+        file_root=f"{this_file_dir}/unit_test_data/sample_src",
         snap_fs   = fsspec.filesystem("file"),
         snap_root = f"{data_root}/snap",
         heap      = heap,
@@ -68,8 +68,8 @@ def test_main_functionalities(data_root):
         heap_root = f"{data_root}/heap",
     )
     restore_snapshooter = Snapshooter(
-        src_fs    = fsspec.filesystem("file"),
-        src_root  = f"{data_root}/restored",
+        file_fs= fsspec.filesystem("file"),
+        file_root=f"{data_root}/restored",
         snap_fs   = fsspec.filesystem("file"),
         snap_root = f"{data_root}/snap",
         heap      = heap,
