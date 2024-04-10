@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="snapshooter",
-    version="0.0.28",
+    version="0.1.29",
     author="jeromerg",
     author_email="jeromerg@gmx.net",
     description="Provides a set of utilities for comparing and backing up data on different filesystems",
@@ -21,6 +21,14 @@ setuptools.setup(
     install_requires=[
         'fsspec',
         'pandas',
+        'tabulate',
+        'typer[all]',
+
     ],
+    entry_points={
+        'console_scripts': [
+            'snapshooter=snapshooter.cli:main_cli',
+        ],
+    },
     python_requires='>=3.10',
 )

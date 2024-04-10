@@ -4,7 +4,7 @@ import json
 def loads_jsonl(content:str):
     result = []
     for idx, line in enumerate(content.split("\n")):
-        if line.strip() is None:
+        if line.strip() == "":
             continue
         try:
             line_obj = json.loads(line)

@@ -94,7 +94,7 @@ def compare_snapshots(
 
     # print stats
     stats_json = df.groupby("status").size().to_dict()
-    log.info(json.dumps(stats_json))
+    log.info(f"Snapshot comparison stats: {stats_json}")
 
     return df
 
@@ -226,7 +226,6 @@ class Snapshooter:
         """
         snap_glob      = FMT_PLACEHOLDER_REGEX.sub("*", SNAP_PATH_FMT)
         snapshot_files = self.snap_fs.glob(f"{self.snap_root}/{snap_glob}")
-        snapshot_files = sorted(snapshot_files, key=natural_sort_key, reverse=True)
         return snapshot_files
 
     def try_get_snapshot_path(
@@ -239,25 +238,28 @@ class Snapshooter:
         :return: The path of the latest snapshot or None, if no snapshot was found.
         """
         log.info("Search latest snapshot")
-        snapshot_files = self.get_snapshot_paths()
-            
-        if len(snapshot_files) == 0:
+        snapshot_paths = self.get_snapshot_paths()
+        if len(snapshot_paths) == 0:
             log.info(f"No snapshot found in {self.snap_fs} / {self.snap_root}")
             return None
+
+        snapshot_path_by_filename = { f.split("/")[-1]: f for f in snapshot_paths }
+        snapshot_filenames_in_reverse_order = sorted(snapshot_path_by_filename.keys(), key=natural_sort_key, reverse=True)
 
         # slice the list of snapshots to the one before the given timestamp    
         snapshot_path = None
         if latest_timestamp is not None:
-            limit_snapshot_file = SNAP_PATH_FMT.format(timestamp=latest_timestamp)
-            for f in snapshot_files:
-                if f <= limit_snapshot_file:
-                    snapshot_path = f
+            limit_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp=latest_timestamp)
+            limit_snapshot_filename = limit_snapshot_relative_path.split("/")[-1]
+            for filename in snapshot_filenames_in_reverse_order:
+                if filename <= limit_snapshot_filename:
+                    snapshot_path = snapshot_path_by_filename[filename]
                     break
             if snapshot_path is None:
                 log.info(f"No snapshot found in {self.snap_fs} / {self.snap_root} with timestamp before (or equal) '{latest_timestamp}'")
                 return None
         else:
-            snapshot_path = snapshot_files[0]
+            snapshot_path = snapshot_path_by_filename[snapshot_filenames_in_reverse_order[0]]
         
         log.info(f"Found snapshot '{snapshot_path}'")
         return snapshot_path
@@ -269,7 +271,7 @@ class Snapshooter:
     ) -> List[Dict] | None:
         if snapshot_path is None:
             if latest_timestamp is None:
-                log.info("Try read latest snapshot")
+                log.info(f"Try read latest snapshot")
             else:
                 log.info(f"Try read latest snapshot before '{latest_timestamp}'")
             snapshot_path = self.try_get_snapshot_path(latest_timestamp)
@@ -278,24 +280,23 @@ class Snapshooter:
         else:
             log.info(f"Try read snapshot from provided path '{snapshot_path}'")
 
-        log.info(f"Read snapshot from {self.snap_fs} / {snapshot_path}")
+        log.info(f"Read snapshot from {snapshot_path} ({self.snap_fs})")
 
         with self.snap_fs.open(snapshot_path, "rb") as f, gzip.GzipFile(fileobj=f) as g:
-            latest_snapshot = loads_jsonl(g.read().decode("utf-8"))  # type: List[Dict]
+            text = g.read().decode("utf-8")
+            latest_snapshot = loads_jsonl(text)  # type: List[Dict]
 
         log.info(f"Read snapshot contains {len(latest_snapshot)} files")
-
         return latest_snapshot
 
     def read_snapshot(
         self,
         snapshot_path: str | None = None,
         latest_timestamp: datetime.datetime | None = None,
-        as_df = False
     ) -> List[dict]:
         latest_snapshot = self.try_read_snapshot(snapshot_path=snapshot_path, latest_timestamp=latest_timestamp)
         if latest_snapshot is None:
-            raise Exception(f"No snapshot found in {self.snap_fs} / {self.snap_root}")        
+            raise Exception(f"No snapshot found in {self.snap_fs} / {self.snap_root}")
         return latest_snapshot
 
     def _make_snapshot_without_md5(self) -> List[dict]:
@@ -347,11 +348,13 @@ class Snapshooter:
         download_missing_files: bool = True
     ) -> tuple[List[dict], datetime.datetime]:
         timestamp = datetime.datetime.utcnow()
-        log.info(f"Create Snapshot with timestamp = '{timestamp}'")
+        log.info(f"Making Snapshot with timestamp = '{timestamp}'")
 
+        log.info(f"Retrieving prior snapshot to optimize download...")
         latest_snapshot = self.try_read_snapshot(latest_timestamp=timestamp)
         if latest_snapshot is None:
             latest_snapshot = []
+        log.info(f"Prior snapshot retrieved")
 
         snapshot = self._make_snapshot_without_md5()
         self._try_enrich_src_file_infos_with_md5_without_downloading(snapshot, latest_snapshot)
@@ -401,7 +404,7 @@ class Snapshooter:
         """
         new_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp=snapshot_timestamp)
         new_snapshot_path = f"{self.snap_root}/{new_snapshot_relative_path}"
-        log.info(f"Save snapshot to {self.snap_fs} / {new_snapshot_path}")
+        log.info(f"Save snapshot to {new_snapshot_path} ({self.snap_fs})")
         self.snap_fs.makedirs(os.path.dirname(new_snapshot_path), exist_ok=True)
         with self.snap_fs.open(new_snapshot_path, "wb") as f, gzip.GzipFile(fileobj=f, mode='wb') as g:
             snap_content = dumps_jsonl(snapshot)
@@ -411,23 +414,32 @@ class Snapshooter:
 
     def restore_snapshot(
         self,
-        snapshot_to_restore: List[dict] | pd.DataFrame | None = None,
-        latest_timestamp: datetime.datetime = None
+        snapshot_to_restore: str | List[dict] | pd.DataFrame | None = None,
+        latest_timestamp: datetime.datetime = None,
+        save_snapshot: bool = True
     ):
+        log.info("Loading snapshot to restore")
+        # read snapshot depending on the type of snapshot_to_restore
         if snapshot_to_restore is None:
-            snapshot_to_restore = self.read_snapshot(latest_timestamp=latest_timestamp)
-
-        if isinstance(snapshot_to_restore, pd.DataFrame):
-            df_snapshot_to_restore = snapshot_to_restore
+            snap = self.read_snapshot(latest_timestamp=latest_timestamp)
+            df_snap = convert_snapshot_to_df(snap)
+        elif isinstance(snapshot_to_restore, str):
+            snap = self.read_snapshot(snapshot_path=snapshot_to_restore)
+            df_snap = convert_snapshot_to_df(snap)
         elif isinstance(snapshot_to_restore, list):
-            df_snapshot_to_restore = convert_snapshot_to_df(snapshot_to_restore)
+            df_snap = convert_snapshot_to_df(snapshot_to_restore)
+        elif isinstance(snapshot_to_restore, pd.DataFrame):
+            df_snap = snapshot_to_restore
         else:
             raise Exception(f"restore_snapshot: Unknown type {type(snapshot_to_restore)} for snapshot_to_restore. Expected: pd.DataFrame, List[dict]")
+        log.info(f"Snapshot to restore loaded")
 
-        current_snapshot, _ = self.make_snapshot()
+        log.info("Making current snapshot to apply diff to")
+        current_snapshot, _ = self.make_snapshot(save_snapshot=save_snapshot, download_missing_files=True)
+        log.info(f"Current snapshot made")
         df_current_snapshot = convert_snapshot_to_df(current_snapshot)
 
-        diff = compare_snapshots(df_snapshot_to_restore, df_current_snapshot)
+        diff = compare_snapshots(df_snap, df_current_snapshot)
 
         self.apply_diff(diff)
 
