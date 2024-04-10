@@ -15,90 +15,84 @@ Key features:
 
 ## Installation
 
-```powershell
+```bash
 pip install snapshooter
 ```
 
-## Usage
+## Usage with CLI
 
-### CLI
+### make a snapshot
 
-#### make a snapshot
-
-```powershell
-snapshooter `
-  --file-root tests/unit_test_data/sample_src `
-  --heap-root tests/temp/sample_heap `
-  --snap-root tests/temp/sample_snap `
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/sample_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
   make-snapshot
 ```
 
-#### restore the latest snapshot 
+### restore the latest snapshot 
 
-```powershell
-snapshooter `
-  --file-root tests/unit_test_data/restored_src `
-  --heap-root tests/temp/sample_heap `
-  --snap-root tests/temp/sample_snap `
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/restored_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
   restore-snapshot
 ```
   
-#### restore the latest snapshot before or at a given timestamp
+### restore the latest snapshot before or at a given timestamp
 
-```powershell
-snapshooter `
-  --file-root tests/unit_test_data/restored_src `
-  --heap-root tests/temp/sample_heap `
-  --snap-root tests/temp/sample_snap `
-  restore-snapshot `
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/restored_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
+  restore-snapshot \
   --latest 2021-09-01T00:00:00  
 ```
 
-#### restore a specific snapshot
+### restore a specific snapshot
 
-```powershell
-snapshooter `
-  --file-root tests/unit_test_data/restored_src `
-  --heap-root tests/temp/sample_heap `
-  --snap-root tests/temp/sample_snap `
-  restore-snapshot `
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/restored_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
+  restore-snapshot \
   --path tests/temp/sample_snap/2024/04/2024-04-10_14-30-40_086601Z.jsonl.gz  
 ```
 
-#### list snapshots
+### list snapshots
 
-```powershell
-snapshooter `
-  --file-root tests/unit_test_data/restored_src `
-  --heap-root tests/temp/sample_heap `
-  --snap-root tests/temp/sample_snap `
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/restored_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
   list-snapshots
 ```
 
-#### compare snapshots
+### compare snapshots
 
-```powershell
-snapshooter `
-  --file-root tests/unit_test_data/sample_src `
-  --heap-root tests/temp/sample_heap `
-  --snap-root tests/temp/sample_snap `
-  compare-snapshots `
-  --path1 tests/temp/sample_snap/2024/04/2024-04-10_14-30-40_086601Z.jsonl.gz `
+```bash
+snapshooter \
+  --file-root tests/unit_test_data/sample_src \
+  --heap-root tests/temp/sample_heap \
+  --snap-root tests/temp/sample_snap \
+  compare-snapshots \
+  --path1 tests/temp/sample_snap/2024/04/2024-04-10_14-30-40_086601Z.jsonl.gz \
 ```
 
 Snapshot can be identified by the options `path1`, `latest1`, `path2`, `latest2`, in the same way as in the 
 command `restore-snapshot`.
   
-#### support for storage options
+### support for storage options (e.g. to pass credentials)
 
-See accepted syntax directly in the adlfs documentation: https://pypi.org/project/adlfs/.
+Example: Azure file system, See accepted syntax directly in the adlfs documentation: https://pypi.org/project/adlfs/.
 
-The usual way, is to first login with az cli, then use the CLI
-
-```powershell
+```bash
 az login
-# ...
-
 snapshooter \
   --file-root az://file-container/file-root \
   --heap-root az://heap-container/heap-root \
@@ -109,7 +103,7 @@ snapshooter \
   make-snapshot
 ```
 
-### Python
+## Usage with Python
 
 See the CLI implementation [here](snapshooter/cli.py) for an example of how to use the `Snapshooter` class.
 
