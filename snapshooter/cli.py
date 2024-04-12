@@ -15,6 +15,10 @@ from snapshooter import Heap, Snapshooter, convert_snapshot_to_df, compare_snaps
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# get root logger
+root_logger = logging.getLogger()
+# shift logging for azure.core.pipeline.policies.http_logging_policy (if root logger is set to INFO, then set this to WARNING and so one)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(root_logger.getEffectiveLevel() + 10)
 
 main_cli = typer.Typer()
 
@@ -47,7 +51,7 @@ def shared_to_all_commands(
     heap_fs, heap_root = fsspec.url_to_fs(heap_root, **heap_storage_options_dict)
     snap_fs, snap_root = fsspec.url_to_fs(snap_root, **snap_storage_options_dict)
 
-    heap = Heap(heap_fs=heap_fs, heap_root=f"{heap_root}/heap")
+    heap = Heap(heap_fs=heap_fs, heap_root=heap_root)
     snapshooter = Snapshooter(file_fs=file_fs, file_root=file_root, snap_fs=snap_fs, snap_root=snap_root, heap=heap)
 
     ctx.obj = snapshooter

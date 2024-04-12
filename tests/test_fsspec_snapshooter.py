@@ -26,15 +26,24 @@ def data_root():
 
 
 def test_main_functionalities(data_root):
+    fs        = fsspec.filesystem("file")
+    heap_root = f"{data_root}/heap"
+    snap_root = f"{data_root}/snap"
+    file_root = f"{this_file_dir}/unit_test_data/sample_src"
+    os.makedirs(heap_root, exist_ok=True)
+    os.makedirs(snap_root, exist_ok=True)
+    os.makedirs(file_root, exist_ok=True)
+
     heap = Heap(
-        heap_fs=fsspec.filesystem("file"),
-        heap_root=f"{data_root}/heap",
+        heap_fs=fs,
+        heap_root=heap_root,
     )
+
     snapshooter = Snapshooter(
-        file_fs= fsspec.filesystem("file"),
-        file_root=f"{this_file_dir}/unit_test_data/sample_src",
-        snap_fs   = fsspec.filesystem("file"),
-        snap_root = f"{data_root}/snap",
+        file_fs   = fs,
+        file_root = file_root,
+        snap_fs   = fs,
+        snap_root = snap_root,
         heap      = heap,
     )
     snap, timestamp = snapshooter.make_snapshot()
@@ -63,21 +72,23 @@ def test_main_functionalities(data_root):
     assert reloaded_snap == snap
 
     # -------------------------------
+    restored_root = f"{data_root}/restored"
+    os.makedirs(restored_root, exist_ok=True)
+    
     heap = Heap(
-        heap_fs   = fsspec.filesystem("file"),
-        heap_root = f"{data_root}/heap",
+        heap_fs   = fs,
+        heap_root = restored_root,
     )
     restore_snapshooter = Snapshooter(
-        file_fs= fsspec.filesystem("file"),
-        file_root=f"{data_root}/restored",
-        snap_fs   = fsspec.filesystem("file"),
-        snap_root = f"{data_root}/snap",
+        file_fs   = fs,
+        file_root = f"{data_root}/restored",
+        snap_fs   = fs,
+        snap_root = snap_root,
         heap      = heap,
     )
 
     restore_snapshooter.restore_snapshot()
     
-    restored_root = f"{data_root}/restored"
     ls = [str(f.relative_to(restored_root)) for f in Path(restored_root).rglob('*') if f.is_file()]
     ls = [f.replace("\\", "/") for f in ls]
     ls = sorted(ls)

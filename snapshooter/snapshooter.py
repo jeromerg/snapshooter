@@ -12,16 +12,20 @@ import traceback
 import uuid
 from contextlib import contextmanager
 from io import BufferedReader
-from typing import List, Dict, Set, Callable
+from typing import Any, Generator, List, Dict, Set, Callable
 
 import fsspec
 import pandas as pd
 from fsspec import AbstractFileSystem
 import concurrent.futures
-from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key
+from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key, patch_AbstractFileSystem_str_function
 from .jsonl_utils import dumps_jsonl, loads_jsonl
 
 log = logging.getLogger(__name__)
+
+
+patch_AbstractFileSystem_str_function()
+
 
 # noinspection RegExpRedundantEscape
 FMT_PLACEHOLDER_REGEX = re.compile(r"\{[^\}]*?\}")
@@ -113,7 +117,7 @@ class Heap:
         self.heap_fs   = _coerce_fs(heap_fs)
         self.heap_root = _coerce_root_dir(heap_fs, heap_root)
         # Get all heap files
-        log.info(f"List out heap files in {self.heap_fs} / {self.heap_root}")
+        log.info(f"List out heap files in {self.heap_root}")
         lister = ParallelLister(
             fs=self.heap_fs,
             root=self.heap_root,
@@ -166,7 +170,7 @@ class Heap:
             raise
 
     @contextmanager
-    def open(self, md5: str) -> BufferedReader:
+    def open(self, md5: str) -> Generator[BufferedReader, Any, Any]:
         heap_file_path_relative = HEAP_FMT_FN(md5)
         heap_file_path = f"{self.heap_root}/{heap_file_path_relative}"
         with self.heap_fs.open(heap_file_path, "rb") as heap_file, gzip.GzipFile(fileobj=heap_file, mode='rb') as heap_file:
@@ -240,7 +244,7 @@ class Snapshooter:
         log.info("Search latest snapshot")
         snapshot_paths = self.get_snapshot_paths()
         if len(snapshot_paths) == 0:
-            log.info(f"No snapshot found in {self.snap_fs} / {self.snap_root}")
+            log.info(f"No snapshot found in {self.snap_root}")
             return None
 
         snapshot_path_by_filename = { f.split("/")[-1]: f for f in snapshot_paths }
@@ -256,7 +260,7 @@ class Snapshooter:
                     snapshot_path = snapshot_path_by_filename[filename]
                     break
             if snapshot_path is None:
-                log.info(f"No snapshot found in {self.snap_fs} / {self.snap_root} with timestamp before (or equal) '{latest_timestamp}'")
+                log.info(f"No snapshot found in {self.snap_root} with timestamp before (or equal) '{latest_timestamp}'")
                 return None
         else:
             snapshot_path = snapshot_path_by_filename[snapshot_filenames_in_reverse_order[0]]
@@ -280,7 +284,7 @@ class Snapshooter:
         else:
             log.info(f"Try read snapshot from provided path '{snapshot_path}'")
 
-        log.info(f"Read snapshot from {snapshot_path} ({self.snap_fs})")
+        log.info(f"Read snapshot from {snapshot_path}")
 
         with self.snap_fs.open(snapshot_path, "rb") as f, gzip.GzipFile(fileobj=f) as g:
             text = g.read().decode("utf-8")
@@ -296,11 +300,11 @@ class Snapshooter:
     ) -> List[dict]:
         latest_snapshot = self.try_read_snapshot(snapshot_path=snapshot_path, latest_timestamp=latest_timestamp)
         if latest_snapshot is None:
-            raise Exception(f"No snapshot found in {self.snap_fs} / {self.snap_root}")
+            raise Exception(f"No snapshot found in '{self.snap_root}'")
         return latest_snapshot
 
     def _make_snapshot_without_md5(self) -> List[dict]:
-        log.info(f"List out src files in {self.file_fs} / {self.file_root} (may last long)")
+        log.info(f"List out src files in '{self.file_root}' (may last long)")
         lister = ParallelLister(
             fs=self.file_fs,
             root=self.file_root,
@@ -404,7 +408,7 @@ class Snapshooter:
         """
         new_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp=snapshot_timestamp)
         new_snapshot_path = f"{self.snap_root}/{new_snapshot_relative_path}"
-        log.info(f"Save snapshot to {new_snapshot_path} ({self.snap_fs})")
+        log.info(f"Save snapshot to {new_snapshot_path}")
         self.snap_fs.makedirs(os.path.dirname(new_snapshot_path), exist_ok=True)
         with self.snap_fs.open(new_snapshot_path, "wb") as f, gzip.GzipFile(fileobj=f, mode='wb') as g:
             snap_content = dumps_jsonl(snapshot)
@@ -498,7 +502,6 @@ class ParallelLister:
                 self.dir_queue.put(None)
 
     def _list_dir(self, directory: str):
-        try:
             all_details = list(self.fs.find(directory, detail=True, withdirs=True, maxdepth=1).values())
             # remove this directory from the file names (to avoid endless loop...)
             all_details = [d for d in all_details if d["name"] != directory]
@@ -508,19 +511,23 @@ class ParallelLister:
                 self.dir_queue.put(sub_dir_info['name'])
             with self.lock:
                 self.result.extend(src_file_infos)
-        except Exception as e:
-            error_message = f"Error listing files in {directory}: {e}"
-            error_message += "\n" + traceback.format_exc()
-            with self.lock:
-                self.errors.append(error_message)
 
     def _process_queue(self):
-        while not self._is_interrupted:
-            self.check_interrupted()
-            directory = self.dir_queue.get()
-            self.check_interrupted()
-            self._list_dir(directory)
-            self.dir_queue.task_done()
+        try:
+            while not self._is_interrupted:
+                self.check_interrupted()
+                directory = self.dir_queue.get()
+                self.check_interrupted()
+                try:
+                    self._list_dir(directory)
+                except Exception as e:
+                    error_message = f"Error listing files in {directory}: {e}"
+                    error_message += "\n" + traceback.format_exc()
+                    with self.lock:
+                        self.errors.append(error_message)
+                self.dir_queue.task_done()
+        except InterruptedError:
+            pass  # some tools log error is thread die because of exception, but we want to ignore this excepted case
 
     def _log_progress(self):
         while True:
@@ -529,6 +536,18 @@ class ParallelLister:
             log.info(f"Progress: {len(self.result)} files listed.")
 
     def list_files(self):
+        # remark: first connection and root check in main thread improves error handling
+        try:
+            root_exists = self.fs.exists(self.root)
+        except Exception as e:
+            raise Exception(f"Error verifying root folder '{self.root}' in {self.fs}: {e}") from e
+
+        if not root_exists:
+            raise Exception(f"Root folder '{self.root}' does not exist in {self.fs}")
+        else:
+            log.info(f"Root folder '{self.root}' exists in {self.fs}. Now listing files...")
+            
+        # start parallelized listing
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_listers) as executor:
             for _ in range(self.parallel_listers):
                 executor.submit(self._process_queue)
