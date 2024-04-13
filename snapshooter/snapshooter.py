@@ -28,16 +28,16 @@ patch_AbstractFileSystem_str_function()
 
 
 # noinspection RegExpRedundantEscape
-FMT_PLACEHOLDER_REGEX = re.compile(r"\{[^\}]*?\}")
-DEFAULT_SRC_FS        = fsspec.filesystem("file")
-DEFAULT_SNAP_ROOT     = os.path.normpath(os.path.abspath("./data/backup/snapshots"))
-DEFAULT_SNAP_FS       = fsspec.filesystem("file")
-SNAP_TIMESTAMP_FMT    = "%Y-%m-%d_%H-%M-%S_%fZ"
-SNAP_PATH_FMT         = f"{{timestamp:%Y}}/{{timestamp:%m}}/{{timestamp:{SNAP_TIMESTAMP_FMT}}}.jsonl.gz"
-DEFAULT_HEAP_ROOT     = os.path.normpath(os.path.abspath("./data/backup/heap"))
-DEFAULT_HEAP_FS       = fsspec.filesystem("file")
-HEAP_FMT_FN           = lambda md5: f"{md5[:2]}/{md5[2:4]}/{md5[4:6]}/{md5}.gz"
-BLOCK_SIZE            = 8 * 1024 * 1024  # 8MB
+FMT_PLACEHOLDER_REGEX  = re.compile(r"\{[^\}]*?\}")
+DEFAULT_SRC_FS         = fsspec.filesystem("file")
+DEFAULT_SNAP_ROOT      = os.path.normpath(os.path.abspath("./data/backup/snapshots"))
+DEFAULT_SNAP_FS        = fsspec.filesystem("file")
+SNAP_TIMESTAMP_UTC_FMT = "%Y-%m-%d_%H-%M-%S_%fZ"
+SNAP_PATH_FMT          = f"{{timestamp_utc:%Y}}/{{timestamp_utc:%m}}/{{timestamp_utc:{SNAP_TIMESTAMP_UTC_FMT}}}.jsonl.gz"
+DEFAULT_HEAP_ROOT      = os.path.normpath(os.path.abspath("./data/backup/heap"))
+DEFAULT_HEAP_FS        = fsspec.filesystem("file")
+HEAP_FMT_FN            = lambda md5: f"{md5[:2]}/{md5[2:4]}/{md5[4:6]}/{md5}.gz"
+BLOCK_SIZE             = 8 * 1024 * 1024  # 8MB
 
 
 def _coerce_fs(fs: AbstractFileSystem | str) -> AbstractFileSystem:
@@ -208,8 +208,17 @@ class Snapshooter:
         :param timestamp: The timestamp of the snapshot.
         :return: The path of the snapshot file.
         """
-        snap_file_path = SNAP_PATH_FMT.format(timestamp=timestamp)
+        # if timestamp is naiv, then assume local time
+        if timestamp.tzinfo is None or timestamp.tzinfo.utcoffset(timestamp) is None:
+            timestamp = timestamp.astimezone()
+        
+        # convert to utc
+        timestamp_utc = timestamp.astimezone(datetime.timezone.utc)
+        
+        # create snapshot file path
+        snap_file_path = SNAP_PATH_FMT.format(timestamp_utc=timestamp_utc)
         snap_file_path = f"{self.snap_root}/{snap_file_path}"
+
         return snap_file_path
 
     def convert_snapshot_path_to_timestamp(self, snap_file_path: str) -> datetime.datetime:
@@ -220,7 +229,8 @@ class Snapshooter:
         """
         snap_file_name     = os.path.basename(snap_file_path)
         snap_timestamp_str = snap_file_name.split(".")[0]
-        snap_timestamp     = datetime.datetime.strptime(snap_timestamp_str, SNAP_TIMESTAMP_FMT)
+        snap_timestamp     = datetime.datetime.strptime(snap_timestamp_str, SNAP_TIMESTAMP_UTC_FMT)
+        snap_timestamp     = snap_timestamp.replace(tzinfo=datetime.timezone.utc)
         return snap_timestamp
 
     def get_snapshot_paths(self) -> list[str]:
@@ -253,7 +263,12 @@ class Snapshooter:
         # slice the list of snapshots to the one before the given timestamp    
         snapshot_path = None
         if latest_timestamp is not None:
-            limit_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp=latest_timestamp)
+            # if timestamp is naiv, then assume local time
+            if latest_timestamp.tzinfo is None or latest_timestamp.tzinfo.utcoffset(latest_timestamp) is None:
+                latest_timestamp = latest_timestamp.astimezone()
+            # convert to utc
+            latest_timestamp_utc = latest_timestamp.astimezone(datetime.timezone.utc)
+            limit_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp_utc=latest_timestamp_utc)
             limit_snapshot_filename = limit_snapshot_relative_path.split("/")[-1]
             for filename in snapshot_filenames_in_reverse_order:
                 if filename <= limit_snapshot_filename:
@@ -351,7 +366,7 @@ class Snapshooter:
         save_snapshot: bool = True,
         download_missing_files: bool = True
     ) -> tuple[List[dict], datetime.datetime]:
-        timestamp = datetime.datetime.utcnow()
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
         log.info(f"Making Snapshot with timestamp = '{timestamp}'")
 
         log.info(f"Retrieving prior snapshot to optimize download...")
@@ -406,7 +421,7 @@ class Snapshooter:
         :param snapshot_timestamp: The timestamp of the snapshot to save.
         :return: The (absolute) path of the saved snapshot.
         """
-        new_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp=snapshot_timestamp)
+        new_snapshot_relative_path = SNAP_PATH_FMT.format(timestamp_utc=snapshot_timestamp)
         new_snapshot_path = f"{self.snap_root}/{new_snapshot_relative_path}"
         log.info(f"Save snapshot to {new_snapshot_path}")
         self.snap_fs.makedirs(os.path.dirname(new_snapshot_path), exist_ok=True)
@@ -420,32 +435,38 @@ class Snapshooter:
         self,
         snapshot_to_restore: str | List[dict] | pd.DataFrame | None = None,
         latest_timestamp: datetime.datetime = None,
-        save_snapshot: bool = True
+        save_snapshot_before: bool = True,
+        save_snapshot_after: bool = True,
     ):
         log.info("Loading snapshot to restore")
         # read snapshot depending on the type of snapshot_to_restore
         if snapshot_to_restore is None:
             snap = self.read_snapshot(latest_timestamp=latest_timestamp)
-            df_snap = convert_snapshot_to_df(snap)
+            df_snapshot_to_restore = convert_snapshot_to_df(snap)
         elif isinstance(snapshot_to_restore, str):
             snap = self.read_snapshot(snapshot_path=snapshot_to_restore)
-            df_snap = convert_snapshot_to_df(snap)
+            df_snapshot_to_restore = convert_snapshot_to_df(snap)
         elif isinstance(snapshot_to_restore, list):
-            df_snap = convert_snapshot_to_df(snapshot_to_restore)
+            df_snapshot_to_restore = convert_snapshot_to_df(snapshot_to_restore)
         elif isinstance(snapshot_to_restore, pd.DataFrame):
-            df_snap = snapshot_to_restore
+            df_snapshot_to_restore = snapshot_to_restore
         else:
             raise Exception(f"restore_snapshot: Unknown type {type(snapshot_to_restore)} for snapshot_to_restore. Expected: pd.DataFrame, List[dict]")
         log.info(f"Snapshot to restore loaded")
 
         log.info("Making current snapshot to apply diff to")
-        current_snapshot, _ = self.make_snapshot(save_snapshot=save_snapshot, download_missing_files=True)
+        current_snapshot, _ = self.make_snapshot(save_snapshot=save_snapshot_before, download_missing_files=True)
         log.info(f"Current snapshot made")
         df_current_snapshot = convert_snapshot_to_df(current_snapshot)
 
-        diff = compare_snapshots(df_snap, df_current_snapshot)
+        df_diff = compare_snapshots(df_snapshot_to_restore, df_current_snapshot)
 
-        self.apply_diff(diff)
+        self.apply_diff(df_diff)
+        
+        # finally save the latest state
+        if save_snapshot_after:
+            timestamp = datetime.datetime.now(datetime.timezone.utc)
+            self._save_snapshot(df_snapshot_to_restore, timestamp)
 
     def apply_diff(self, df_diff: pd.DataFrame):
         if not isinstance(df_diff, pd.DataFrame):
@@ -457,8 +478,7 @@ class Snapshooter:
 
         log.info(f"Copying files: {len(relative_path_only_left)} only_left + {len(relative_path_different)} different")
         for file_relative_path in sorted(relative_path_only_left | relative_path_different):
-            file_info_row = df_diff.loc[file_relative_path, :]
-            md5 = file_info_row["md5_left"]
+            md5 = df_diff.at[file_relative_path, "md5_left"]
             src_file_path = f"{self.file_root}/{file_relative_path}"
             log.debug(f"Copying file with md5 '{md5}' to '{file_relative_path}'")
             self.file_fs.makedirs(os.path.dirname(src_file_path), exist_ok=True)
@@ -502,10 +522,10 @@ class ParallelLister:
                 self.dir_queue.put(None)
 
     def _list_dir(self, directory: str):
-            all_details = list(self.fs.find(directory, detail=True, withdirs=True, maxdepth=1).values())
-            # remove this directory from the file names (to avoid endless loop...)
-            all_details = [d for d in all_details if d["name"] != directory]
-            sub_dir_infos = [d for d in all_details if d['type'] == 'directory']
+            all_details    = self.fs.find(directory, detail=True, withdirs=True, maxdepth=1).values()
+            all_details    = list(all_details)
+            all_details    = [d for d in all_details if d["name"] != directory]  # avoid endless loop
+            sub_dir_infos  = [d for d in all_details if d['type'] == 'directory']
             src_file_infos = [d for d in all_details if d['type'] == 'file']
             for sub_dir_info in sub_dir_infos:
                 self.dir_queue.put(sub_dir_info['name'])
@@ -530,10 +550,14 @@ class ParallelLister:
             pass  # some tools log error is thread die because of exception, but we want to ignore this excepted case
 
     def _log_progress(self):
-        while True:
-            time.sleep(10)
-            self.check_interrupted()
-            log.info(f"Progress: {len(self.result)} files listed.")
+        try:
+            while True:
+                time.sleep(10)
+                self.check_interrupted()
+                log.info(f"Progress: {len(self.result)} files listed.")
+        except InterruptedError:
+            # some tools log error is thread die because of exception, but we want to ignore this excepted case
+            log.debug("ParallelLister: Logging thread interrupted properly.")
 
     def list_files(self):
         # remark: first connection and root check in main thread improves error handling
@@ -547,6 +571,12 @@ class ParallelLister:
         else:
             log.info(f"Root folder '{self.root}' exists in {self.fs}. Now listing files...")
             
+        # even first root dir search in main threa ensures that access rights are ok
+        try:
+            self._list_dir(self.root)
+        except Exception as e:
+            raise Exception(f"Error listing files of root folder '{self.root}' in {self.fs}: {e}") from e
+            
         # start parallelized listing
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_listers) as executor:
             for _ in range(self.parallel_listers):
@@ -556,7 +586,6 @@ class ParallelLister:
             log_thread.start()
 
             # Add root and wait for the directory listing tasks to complete
-            self.dir_queue.put(self.root)
             self.dir_queue.join()
 
             # for logger
@@ -627,11 +656,15 @@ class ParallelDownloaderToHeap:
                 self.download_count += 1
 
     def _log_progress(self):
-        while True:
-            time.sleep(10)
-            self.check_interrupted()
-            log.info(f"Progress: {self.download_count}/{len(self.all_file_names_to_download)} files downloaded.")
-
+        try:
+            while True:
+                time.sleep(10)
+                self.check_interrupted()
+                log.info(f"Progress: {self.download_count}/{len(self.all_file_names_to_download)} files downloaded.")
+        except InterruptedError:
+            # some tools log error is thread die because of exception, but we want to ignore this excepted case
+            log.debug("ParallelDownloaderToHeap: Logging thread interrupted properly.")
+            
     def download_files(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_downloaders) as executor:
             log_thread = threading.Thread(target=self._log_progress, daemon=True)

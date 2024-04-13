@@ -83,7 +83,7 @@ def restore_snapshot(
     snapshooter.restore_snapshot(
         snapshot_to_restore=path,
         latest_timestamp=latest_timestamp,
-        save_snapshot=save_snapshot,
+        save_snapshot_before=save_snapshot,
     )
 
 

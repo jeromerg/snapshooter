@@ -23,7 +23,7 @@ setuptools.setup(
         'pandas',
         'tabulate',
         'typer[all]',
-
+        'tzlocal',
     ],
     entry_points={
         'console_scripts': [
