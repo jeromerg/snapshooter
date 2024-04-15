@@ -61,6 +61,16 @@ def _coerce_root_dir(fs: AbstractFileSystem, root: str) -> str:
     return root
 
 
+def _create_folder_if_not_exists(fs: AbstractFileSystem, folder: str, folder_desc: str):
+    log.info(f"Verifying if {folder_desc} exists")
+    if not fs.exists(folder):
+        log.info(f"{folder_desc} '{folder}' does not exist in {fs}, trying to create it")
+        fs.makedirs(folder, exist_ok=True)
+        log.info(f"{folder_desc} '{folder}' created in {fs}")
+    else:
+        log.info(f"{folder_desc} '{folder}' exists in {fs}")
+
+
 def convert_snapshot_to_df(snapshot: List[dict]) -> pd.DataFrame:
     if not isinstance(snapshot, list):
         raise Exception(f"convert_snapshot_to_df: Unknown type {type(snapshot)} for snapshot. Expected: List[dict]")
@@ -375,6 +385,9 @@ class Snapshooter:
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         log.info(f"Making Snapshot with timestamp = '{timestamp}'")
 
+        _create_folder_if_not_exists(self.file_fs, self.file_root, "root folder")
+        _create_folder_if_not_exists(self.snap_fs, self.snap_root, "snapshot root folder")
+        
         log.info(f"Retrieving prior snapshot to optimize download...")
         latest_snapshot = self.try_read_snapshot(latest_timestamp=timestamp)
         if latest_snapshot is None:
@@ -467,6 +480,13 @@ class Snapshooter:
 
         df_diff = compare_snapshots(df_snapshot_to_restore, df_current_snapshot)
 
+        if df_diff["status"].eq("equal").all():
+            log.info(f"No files to restore, all {len(df_diff)} files are equal")
+            return
+        
+        _create_folder_if_not_exists(self.file_fs, self.file_root, "root folder")
+        
+        log.info(f"Applying diff to restore {len(df_diff)} files")
         self.apply_diff(df_diff)
         
         # finally save the latest state if requested

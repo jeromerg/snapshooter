@@ -1,4 +1,4 @@
-name: Upload Python Package
+name: Publish
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   pypi-publish:
-    name: upload release to PyPI
+    name: upload release to pypi and github
     runs-on: ubuntu-latest
     permissions:
       id-token: write

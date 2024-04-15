@@ -1,3 +1,7 @@
+[![Tests](https://github.com/jeromerg/snapshooter/actions/workflows/python-app.yml/badge.svg)](https://github.com/jeromerg/snapshooter/actions/workflows/python-app.yml)
+[![Publish](https://github.com/jeromerg/snapshooter/actions/workflows/python-publish.yml/badge.svg)](https://github.com/jeromerg/snapshooter/actions/workflows/python-publish.yml)
+
+
 # Snapshooter (fsspec folder backup and restore tooling)
 
 Snapshooter is a tool to back up and restore a folder in a fsspec file system. It is designed to be used with the 
