@@ -26,13 +26,14 @@ jobs:
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v4.0.1
       with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        slug: jeromerg/snapshooter      
+        use_oidc: true      
   publish:
     name: Publish
     runs-on: ubuntu-latest
     # only run on push event (not on pull_request event)
     if: github.event_name == 'push'
+    # only run if test job is successful
+    needs: test
     permissions:
       id-token: write
       contents: write
