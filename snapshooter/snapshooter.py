@@ -22,7 +22,7 @@ import concurrent.futures
 from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key, patch_AbstractFileSystem_str_function
 from .jsonl_utils import dumps_jsonl, loads_jsonl
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("snapshooter")
 
 
 patch_AbstractFileSystem_str_function()
@@ -37,7 +37,8 @@ SNAP_TIMESTAMP_UTC_FMT = "%Y-%m-%d_%H-%M-%S_%fZ"
 SNAP_PATH_FMT          = f"{{timestamp_utc:%Y}}/{{timestamp_utc:%m}}/{{timestamp_utc:{SNAP_TIMESTAMP_UTC_FMT}}}.jsonl.gz"
 DEFAULT_HEAP_ROOT      = os.path.normpath(os.path.abspath("./data/backup/heap"))
 DEFAULT_HEAP_FS        = fsspec.filesystem("file")
-HEAP_FMT_FN            = lambda md5: f"{md5[:2]}/{md5[2:4]}/{md5[4:6]}/{md5}.gz"
+# Remark: change HEAP_FMT_FN to change the buckets size of md5 files.
+HEAP_FMT_FN            = lambda md5: f"{md5[:2]}/{md5}.gz"
 BLOCK_SIZE             = 8 * 1024 * 1024  # 8MB
 
 
@@ -119,6 +120,7 @@ class Heap:
         self,
         heap_fs   : AbstractFileSystem,
         heap_root : str,
+        parallel_listing: int = 20,
     ) -> None:
         """ Create a new Snapshooter instance.
 
@@ -132,7 +134,7 @@ class Heap:
         lister = ParallelLister(
             fs=self.heap_fs,
             root=self.heap_root,
-            parallel_listers=10,
+            parallel_listers=parallel_listing,
         )
         heap_file_paths = [fi["name"] for fi in lister.list_files()]
         # basename WITHOUT EXTENSION corresponds to the md5
@@ -560,19 +562,20 @@ class ParallelLister:
         try:
             root_exists = self.fs.exists(self.root)
         except Exception as e:
-            raise Exception(f"Error verifying root folder '{self.root}' in {self.fs}: {e}") from e
+            raise Exception(f"ParallelLister: Error verifying root folder '{self.root}' in {self.fs}: {e}") from e
 
         if not root_exists:
-            raise Exception(f"Root folder '{self.root}' does not exist in {self.fs}")
+            raise Exception(f"ParallelLister: Root folder '{self.root}' does not exist in {self.fs}")
         else:
-            log.info(f"Root folder '{self.root}' exists in {self.fs}. Now listing files...")
+            log.info(f"ParallelLister: Root folder '{self.root}' exists in {self.fs}")
 
+        log.info(f"ParallelLister: Listing files in '{self.root}' with {self.parallel_listers} workers")
         tic = time.monotonic()
         # even first root dir search in main threa ensures that access rights are ok
         try:
             self._list_dir(self.root)
         except Exception as e:
-            raise Exception(f"Error listing files of root folder '{self.root}' in {self.fs}: {e}") from e
+            raise Exception(f"ParallelLister: Error listing files of root folder '{self.root}' in {self.fs}: {e}") from e
             
         # start parallelized listing
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_listers) as executor:
@@ -591,11 +594,11 @@ class ParallelLister:
         # Check if there were any errors during listing
         if self.errors:
             error_summary = "\n---------------------------\n".join(self.errors)
-            raise Exception(f"Errors occurred during file listing:\n{error_summary}")
+            raise Exception(f"ParallelLister: Errors occurred during file listing:\n{error_summary}")
         else:
             elapsed_time = time.monotonic() - tic
             files_per_seconds = len(self.result) / elapsed_time
-            log.info(f"Listed {len(self.result)} files in {elapsed_time:.2f} seconds ({files_per_seconds:.2f} files/s)")
+            log.info(f"ParallelLister: Listed {len(self.result)} files in {elapsed_time:.2f} seconds ({files_per_seconds:.2f} files/s)")
 
         return self.result
 

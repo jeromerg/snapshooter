@@ -45,6 +45,7 @@ def shared_to_all_commands(
     parallel_copy_to_heap   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_HEAP"   , help="Number of parallel threads to use for copying files to heap")] = 20,
     parallel_copy_to_file   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_FILE"   , help="Number of parallel threads to use for copying files to file")] = 20,
     parallel_delete_in_file : Annotated[int, typer.Option(envvar="PARALLEL_DELETE_IN_FILE" , help="Number of parallel threads to use for deleting files in file")] = 20,
+    parallel_listing        : Annotated[int, typer.Option(envvar="PARALLEL_LISTING"        , help="Number of parallel threads to use for listing files in heap")] = 20,
 ):
     file_storage_options_dict = json.loads(file_storage_options or "{}")
     heap_storage_options_dict = json.loads(heap_storage_options or "{}")
@@ -54,7 +55,11 @@ def shared_to_all_commands(
     heap_fs, heap_root = fsspec.url_to_fs(heap_root, **heap_storage_options_dict)
     snap_fs, snap_root = fsspec.url_to_fs(snap_root, **snap_storage_options_dict)
 
-    heap = Heap(heap_fs=heap_fs, heap_root=heap_root)
+    heap = Heap(
+        heap_fs          = heap_fs, 
+        heap_root        = heap_root, 
+        parallel_listing = parallel_listing
+    )
     snapshooter = Snapshooter(
         file_fs                 = file_fs, 
         file_root               = file_root, 
