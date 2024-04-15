@@ -642,7 +642,7 @@ class ParallelFileProcessor:
         self._is_interrupted = True
 
     def process_files(self):
-        log.info(f"{self.__class__.__name__}: Processing {len(self.relative_paths_to_process)} with {self.parallelization} workers")
+        log.info(f"{self.__class__.__name__}: Processing {len(self.relative_paths_to_process)} files with {self.parallelization} workers")
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallelization) as executor:
             log_thread = threading.Thread(target=self._log_progress, daemon=True)
             log_thread.start()

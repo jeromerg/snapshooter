@@ -15,3 +15,4 @@ docs/build/
 temp/
 .venv/
 /tests/runs/
+backup.sh
