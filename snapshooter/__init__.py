@@ -5,4 +5,4 @@ from .snapshooter import (
     Snapshooter,
 )
 
-__version__ = "0.9.X"
+__version__ = "1.0.X"
