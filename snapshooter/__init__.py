@@ -4,3 +4,5 @@ from .snapshooter import (
     Heap,
     Snapshooter,
 )
+
+__version__ = "0.9.X"

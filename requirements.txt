@@ -10,3 +10,5 @@ coverage
 ipykernel
 typer[all]
 tabulate
+tzlocal
+

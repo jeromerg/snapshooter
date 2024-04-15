@@ -1,11 +1,14 @@
+import os
 import setuptools
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
+version = os.getenv("VERSION")
+
 setuptools.setup(
     name="snapshooter",
-    version="0.1.29",
+    version=version,
     author="jeromerg",
     author_email="jeromerg@gmx.net",
     description="Provides a set of utilities for comparing and backing up data on different filesystems",
@@ -23,7 +26,7 @@ setuptools.setup(
         'pandas',
         'tabulate',
         'typer[all]',
-
+        'tzlocal',
     ],
     entry_points={
         'console_scripts': [

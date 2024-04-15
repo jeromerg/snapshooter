@@ -15,6 +15,10 @@ from snapshooter import Heap, Snapshooter, convert_snapshot_to_df, compare_snaps
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# get root logger
+root_logger = logging.getLogger()
+# shift logging for azure.core.pipeline.policies.http_logging_policy (if root logger is set to INFO, then set this to WARNING and so one)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(root_logger.getEffectiveLevel() + 10)
 
 main_cli = typer.Typer()
 
@@ -31,13 +35,16 @@ class SharedConfig:
 
 @main_cli.callback(no_args_is_help=True)
 def shared_to_all_commands(
-    ctx                  : typer.Context,
-    file_root            : Annotated[str, typer.Option(envvar="FILE_ROOT"            , help="The directory under consideration, to backup or to restore to. Provided as fsspec path/uri")],
-    heap_root            : Annotated[str, typer.Option(envvar="HEAP_ROOT"            , help="The directory containing the heap files. Provided as fsspec path/uri")],
-    snap_root            : Annotated[str, typer.Option(envvar="SNAP_ROOT"            , help="The directory containing the snapshot files. Provided as fsspec path/uri")],
-    file_storage_options : Annotated[str, typer.Option(envvar="FILE_STORAGE_OPTIONS" , help="Additional storage options to pass to fsspec dir file system. expected JSON string")] = None,
-    heap_storage_options : Annotated[str, typer.Option(envvar="HEAP_STORAGE_OPTIONS" , help="Additional storage options to pass to fsspec heap_dir file system. expected JSON string")] = None,
-    snap_storage_options : Annotated[str, typer.Option(envvar="SNAP_STORAGE_OPTIONS" , help="Additional storage options to pass to fsspec snap_dir file system. expected JSON string")] = None,
+    ctx                     : typer.Context,
+    file_root               : Annotated[str, typer.Option(envvar="FILE_ROOT"               , help="The directory under consideration, to backup or to restore to. Provided as fsspec path/uri")],
+    heap_root               : Annotated[str, typer.Option(envvar="HEAP_ROOT"               , help="The directory containing the heap files. Provided as fsspec path/uri")],
+    snap_root               : Annotated[str, typer.Option(envvar="SNAP_ROOT"               , help="The directory containing the snapshot files. Provided as fsspec path/uri")],
+    file_storage_options    : Annotated[str, typer.Option(envvar="FILE_STORAGE_OPTIONS"    , help="Additional storage options to pass to fsspec dir file system. expected JSON string")] = None,
+    heap_storage_options    : Annotated[str, typer.Option(envvar="HEAP_STORAGE_OPTIONS"    , help="Additional storage options to pass to fsspec heap_dir file system. expected JSON string")] = None,
+    snap_storage_options    : Annotated[str, typer.Option(envvar="SNAP_STORAGE_OPTIONS"    , help="Additional storage options to pass to fsspec snap_dir file system. expected JSON string")] = None,
+    parallel_copy_to_heap   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_HEAP"   , help="Number of parallel threads to use for copying files to heap")] = 20,
+    parallel_copy_to_file   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_FILE"   , help="Number of parallel threads to use for copying files to file")] = 20,
+    parallel_delete_in_file : Annotated[int, typer.Option(envvar="PARALLEL_DELETE_IN_FILE" , help="Number of parallel threads to use for deleting files in file")] = 20,
 ):
     file_storage_options_dict = json.loads(file_storage_options or "{}")
     heap_storage_options_dict = json.loads(heap_storage_options or "{}")
@@ -47,8 +54,17 @@ def shared_to_all_commands(
     heap_fs, heap_root = fsspec.url_to_fs(heap_root, **heap_storage_options_dict)
     snap_fs, snap_root = fsspec.url_to_fs(snap_root, **snap_storage_options_dict)
 
-    heap = Heap(heap_fs=heap_fs, heap_root=f"{heap_root}/heap")
-    snapshooter = Snapshooter(file_fs=file_fs, file_root=file_root, snap_fs=snap_fs, snap_root=snap_root, heap=heap)
+    heap = Heap(heap_fs=heap_fs, heap_root=heap_root)
+    snapshooter = Snapshooter(
+        file_fs                 = file_fs, 
+        file_root               = file_root, 
+        snap_fs                 = snap_fs, 
+        snap_root               = snap_root, 
+        heap                    = heap,
+        parallel_copy_to_heap   = parallel_copy_to_heap,
+        parallel_copy_to_file   = parallel_copy_to_file,
+        parallel_delete_in_file = parallel_delete_in_file,
+    )
 
     ctx.obj = snapshooter
     ctx.ensure_object(Snapshooter)
@@ -69,17 +85,19 @@ def make_snapshot(
 
 @main_cli.command()
 def restore_snapshot(
-    ctx           : typer.Context,
-    path          : Annotated[str, typer.Argument(help="The path to the snapshot file to restore. If not set, then it will look for the latest snapshot available, that fulfills the --latest timestamp if provided")] = None,
-    latest        : Annotated[str, typer.Argument(help="If set, then look for the latest snapshot before or at this timestamp. Expected format is 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS[offset]'.")] = None,
-    save_snapshot : Annotated[bool, typer.Option(help="Whether to save the current state into a 'backup' snapshot or not. Default is True.")] = True,
+    ctx                  : typer.Context,
+    path                 : Annotated[str, typer.Argument(help="The path to the snapshot file to restore. If not set, then it will look for the latest snapshot available, that fulfills the --latest timestamp if provided")] = None,
+    latest               : Annotated[str, typer.Argument(help="If set, then look for the latest snapshot before or at this timestamp. Expected format is 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS[offset]'.")] = None,
+    save_snapshot_before : Annotated[bool, typer.Option(help="Whether to save the current state into a 'backup' snapshot or not. Default is True.")] = True,
+    save_snapshot_after  : Annotated[bool, typer.Option(help="Whether to save the restored state into a 'backup' snapshot or not. Default is True.")] = False,
 ):
     snapshooter: Snapshooter = ctx.obj
     latest_timestamp = datetime.fromisoformat(latest) if latest is not None else None
     snapshooter.restore_snapshot(
         snapshot_to_restore=path,
         latest_timestamp=latest_timestamp,
-        save_snapshot=save_snapshot,
+        save_snapshot_before=save_snapshot_before,
+        save_snapshot_after=save_snapshot_after,
     )
 
 
