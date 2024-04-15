@@ -2,13 +2,37 @@ name: Publish
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  pypi-publish:
-    name: upload release to pypi and github
+  test:
+    name: Test
     runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.10.13
+    - name: Install dependencies
+      uses: py-actions/py-dependency-install@v4
+    - name: Test with pytest and coverage
+      run: |
+        coverage run --source=snapshooter -m pytest
+        coverage xml
+        coverage html
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v4.0.1
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        slug: jeromerg/snapshooter      
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    # only run on push event (not on pull_request event)
+    if: github.event_name == 'push'
     permissions:
       id-token: write
       contents: write
