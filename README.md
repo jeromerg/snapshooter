@@ -1,4 +1,5 @@
 [![CI/CD Pipeline](https://github.com/jeromerg/snapshooter/actions/workflows/cicd.yml/badge.svg)](https://github.com/jeromerg/snapshooter/actions/workflows/cicd.yml)
+[![Coverage](https://codecov.io/gh/jeromerg/snapshooter/graph/badge.svg?token=KC6KDDOBUF)](https://codecov.io/gh/jeromerg/snapshooter)
 
 # Snapshooter (fsspec folder backup and restore tooling)
 
