@@ -555,6 +555,50 @@ class ParallelLister:
             for _ in range(self.parallel_listers):
                 self.dir_queue.put(None)
 
+    def list_files(self):
+        # remark: first connection and root check in main thread improves error handling
+        try:
+            root_exists = self.fs.exists(self.root)
+        except Exception as e:
+            raise Exception(f"Error verifying root folder '{self.root}' in {self.fs}: {e}") from e
+
+        if not root_exists:
+            raise Exception(f"Root folder '{self.root}' does not exist in {self.fs}")
+        else:
+            log.info(f"Root folder '{self.root}' exists in {self.fs}. Now listing files...")
+
+        tic = time.monotonic()
+        # even first root dir search in main threa ensures that access rights are ok
+        try:
+            self._list_dir(self.root)
+        except Exception as e:
+            raise Exception(f"Error listing files of root folder '{self.root}' in {self.fs}: {e}") from e
+            
+        # start parallelized listing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_listers) as executor:
+            for _ in range(self.parallel_listers):
+                executor.submit(self._process_queue)
+
+            log_thread = threading.Thread(target=self._log_progress, daemon=True)
+            log_thread.start()
+
+            # Add root and wait for the directory listing tasks to complete
+            self.dir_queue.join()
+
+            # for logger
+            self.interrupt()
+
+        # Check if there were any errors during listing
+        if self.errors:
+            error_summary = "\n---------------------------\n".join(self.errors)
+            raise Exception(f"Errors occurred during file listing:\n{error_summary}")
+        else:
+            elapsed_time = time.monotonic() - tic
+            files_per_seconds = len(self.result) / elapsed_time
+            log.info(f"Listed {len(self.result)} files in {elapsed_time:.2f} seconds ({files_per_seconds:.2f} files/s)")
+
+        return self.result
+
     def _list_dir(self, directory: str):
             # all_details  = self.fs.find(directory, detail=True, withdirs=True, maxdepth=0).values()
             # all_details  = list(all_details)
@@ -594,45 +638,6 @@ class ParallelLister:
             # some tools log error is thread die because of exception, but we want to ignore this excepted case
             log.debug("ParallelLister: Logging thread interrupted properly.")
 
-    def list_files(self):
-        # remark: first connection and root check in main thread improves error handling
-        try:
-            root_exists = self.fs.exists(self.root)
-        except Exception as e:
-            raise Exception(f"Error verifying root folder '{self.root}' in {self.fs}: {e}") from e
-
-        if not root_exists:
-            raise Exception(f"Root folder '{self.root}' does not exist in {self.fs}")
-        else:
-            log.info(f"Root folder '{self.root}' exists in {self.fs}. Now listing files...")
-            
-        # even first root dir search in main threa ensures that access rights are ok
-        try:
-            self._list_dir(self.root)
-        except Exception as e:
-            raise Exception(f"Error listing files of root folder '{self.root}' in {self.fs}: {e}") from e
-            
-        # start parallelized listing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_listers) as executor:
-            for _ in range(self.parallel_listers):
-                executor.submit(self._process_queue)
-
-            log_thread = threading.Thread(target=self._log_progress, daemon=True)
-            log_thread.start()
-
-            # Add root and wait for the directory listing tasks to complete
-            self.dir_queue.join()
-
-            # for logger
-            self.interrupt()
-
-        # Check if there were any errors during listing
-        if self.errors:
-            error_summary = "\n---------------------------\n".join(self.errors)
-            raise Exception(f"Errors occurred during file listing:\n{error_summary}")
-
-        return self.result
-
 
 class ParallelFileProcessor:
     """Abstract class for parallel file processing."""
@@ -663,6 +668,7 @@ class ParallelFileProcessor:
 
     def process_files(self):
         log.info(f"{self.__class__.__name__}: Processing {len(self.relative_paths_to_process)} files with {self.parallelization} workers")
+        tic = time.monotonic()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallelization) as executor:
             log_thread = threading.Thread(target=self._log_progress, daemon=True)
             log_thread.start()
@@ -686,6 +692,13 @@ class ParallelFileProcessor:
         if self.errors:
             error_summary = "\n---------------------------\n".join(self.errors)
             raise Exception(f"{self.__class__.__name__}: Errors occurred during files processing:\n{error_summary}")
+        else:
+            elapsed_time = time.monotonic() - tic
+            files_per_second = len(self.relative_paths_to_process) / elapsed_time
+            log.info(
+                f"{self.__class__.__name__}: Processing {len(self.relative_paths_to_process)} files with {self.parallelization} workers "
+                f"in {elapsed_time:.2f} seconds ({files_per_second:.2f} files/s)"
+            )
 
     @abstractmethod
     def _process_file(self, file_relative_path):
