@@ -3,16 +3,20 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Tuple, List, Literal
+from typing import List
 
 import fsspec
 import typer
-from fsspec import AbstractFileSystem
 from typing_extensions import Annotated
 
 from snapshooter import Heap, Snapshooter, convert_snapshot_to_df, compare_snapshots as compare_snapshots_
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO, 
+    # format: HH:MM:SS (UTC) - level - name - message
+    format="%(asctime)s (%(levelname)s) - %(name)s - %(message)s",
+)
+                    
 log = logging.getLogger(__name__)
 
 # get root logger
@@ -45,7 +49,8 @@ def shared_to_all_commands(
     parallel_copy_to_heap   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_HEAP"   , help="Number of parallel threads to use for copying files to heap")] = 20,
     parallel_copy_to_file   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_FILE"   , help="Number of parallel threads to use for copying files to file")] = 20,
     parallel_delete_in_file : Annotated[int, typer.Option(envvar="PARALLEL_DELETE_IN_FILE" , help="Number of parallel threads to use for deleting files in file")] = 20,
-    parallel_listing        : Annotated[int, typer.Option(envvar="PARALLEL_LISTING"        , help="Number of parallel threads to use for listing files in heap")] = 20,
+    parallel_listing        : Annotated[int, typer.Option(envvar="PARALLEL_LISTING"        , help="Number of parallel threads to use for listing files in file")] = 20,
+    parallel_heap_listing   : Annotated[int, typer.Option(envvar="PARALLEL_HEAP_LISTING"   , help="Number of parallel threads to use for listing files in heap")] = 20,
 ):
     file_storage_options_dict = json.loads(file_storage_options or "{}")
     heap_storage_options_dict = json.loads(heap_storage_options or "{}")
@@ -58,7 +63,7 @@ def shared_to_all_commands(
     heap = Heap(
         heap_fs          = heap_fs, 
         heap_root        = heap_root, 
-        parallel_listing = parallel_listing
+        parallel_listing = parallel_heap_listing
     )
     snapshooter = Snapshooter(
         file_fs                 = file_fs, 
@@ -69,6 +74,7 @@ def shared_to_all_commands(
         parallel_copy_to_heap   = parallel_copy_to_heap,
         parallel_copy_to_file   = parallel_copy_to_file,
         parallel_delete_in_file = parallel_delete_in_file,
+        parallel_listing        = parallel_listing,
     )
 
     ctx.obj = snapshooter

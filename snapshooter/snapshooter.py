@@ -134,7 +134,7 @@ class Heap:
         lister = ParallelLister(
             fs=self.heap_fs,
             root=self.heap_root,
-            parallel_listers=parallel_listing,
+            parallel_file_listing=parallel_listing,
         )
         heap_file_paths = [fi["name"] for fi in lister.list_files()]
         # basename WITHOUT EXTENSION corresponds to the md5
@@ -198,9 +198,10 @@ class Snapshooter:
         snap_fs   : AbstractFileSystem,
         snap_root : str,
         heap      : Heap,
-        parallel_copy_to_heap   : int = 10,
-        parallel_copy_to_file   : int = 10,
-        parallel_delete_in_file : int = 10,
+        parallel_copy_to_heap   : int = 20,
+        parallel_copy_to_file   : int = 20,
+        parallel_delete_in_file : int = 20,
+        parallel_listing        : int = 20,
     ) -> None:
         """ Create a new Snapshooter instance.
 
@@ -218,6 +219,7 @@ class Snapshooter:
         self.parallel_copy_to_heap   : int  = parallel_copy_to_heap
         self.parallel_copy_to_file   : int  = parallel_copy_to_file
         self.parallel_delete_in_file : int  = parallel_delete_in_file
+        self.parallel_listing        : int  = parallel_listing
         
 
     def convert_snapshot_timestamp_to_path(self, timestamp: datetime.datetime) -> str:
@@ -303,8 +305,8 @@ class Snapshooter:
 
     def try_read_snapshot(
         self, 
-        snapshot_path: str | None = None,
-        latest_timestamp: datetime.datetime | None = None,
+        snapshot_path    : str | None = None,
+        latest_timestamp : datetime.datetime | None = None,
     ) -> List[Dict] | None:
         if snapshot_path is None:
             if latest_timestamp is None:
@@ -339,9 +341,9 @@ class Snapshooter:
     def _make_snapshot_without_md5(self) -> List[dict]:
         log.info(f"List out src files in '{self.file_root}' (may last long)")
         lister = ParallelLister(
-            fs=self.file_fs,
-            root=self.file_root,
-            parallel_listers=10,
+            fs                    = self.file_fs,
+            root                  = self.file_root,
+            parallel_file_listing = self.parallel_listing,
         )
         src_file_infos = lister.list_files()
         log.info(f"Found {len(src_file_infos)} src files")
@@ -361,8 +363,8 @@ class Snapshooter:
 
     def _try_enrich_src_file_infos_with_md5_without_downloading(
         self,
-        src_file_infos: List[dict],
-        latest_snapshot: List[dict]
+        src_file_infos  : List[dict],
+        latest_snapshot : List[dict]
     ):
         """ This function uses a previous snapshot and tries to find in it the same file name, then verifies if
         the file is the same by using file system specific way to identify same file (e.g. ETAG) and if it is the same
@@ -454,10 +456,10 @@ class Snapshooter:
 
     def restore_snapshot(
         self,
-        snapshot_to_restore: str | List[dict] | pd.DataFrame | None = None,
-        latest_timestamp: datetime.datetime = None,
-        save_snapshot_before: bool = True,
-        save_snapshot_after: bool = False,
+        snapshot_to_restore  : str | List[dict] | pd.DataFrame | None = None,
+        latest_timestamp     : datetime.datetime = None,
+        save_snapshot_before : bool = True,
+        save_snapshot_after  : bool = False,
     ):
         log.info("Loading snapshot to restore")
         # read snapshot depending on the type of snapshot_to_restore
@@ -532,18 +534,18 @@ class Snapshooter:
 class ParallelLister:
     def __init__(
         self,
-        fs: AbstractFileSystem,
-        root: str,
-        parallel_listers: int,
+        fs                    : AbstractFileSystem,
+        root                  : str,
+        parallel_file_listing : int,
     ):
-        self.fs = fs
-        self.root = root
-        self.parallel_listers = parallel_listers
-        self.dir_queue = queue.Queue()
-        self.result = []
-        self.errors = []
-        self.lock = threading.Lock()
-        self._is_interrupted = False
+        self.fs               = fs
+        self.root             = root
+        self.parallel_listers = parallel_file_listing
+        self.dir_queue        = queue.Queue()
+        self.result           = []
+        self.errors           = []
+        self.lock             = threading.Lock()
+        self._is_interrupted  = False
 
     def check_interrupted(self):
         if self._is_interrupted:
