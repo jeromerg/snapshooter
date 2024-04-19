@@ -53,9 +53,10 @@ def test_main_functionalities(data_root):
         snap_root = snap_root,
         heap      = heap,
     )
-    snap, timestamp = snapshooter.make_snapshot()
+    snap, timestamp, path = snapshooter.make_snapshot()
     assert timestamp is not None
     assert snap is not None
+    assert path is not None
     assert isinstance(timestamp, datetime)
     assert isinstance(snap, list)
     assert len(snap) == 3
@@ -125,9 +126,10 @@ def test_main_functionalities(data_root):
         snap_root = snap_root,
         heap      = heap,
     )
-    snap, timestamp = snapshooter.make_snapshot()
+    snap, timestamp, path = snapshooter.make_snapshot()
     assert timestamp is not None
     assert snap is not None
+    assert path is not None
     assert isinstance(timestamp, datetime)
     assert isinstance(snap, list)
     assert len(snap) == 3

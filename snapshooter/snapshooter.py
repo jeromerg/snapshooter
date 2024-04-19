@@ -129,17 +129,28 @@ class Heap:
         """
         self.heap_fs   = _coerce_fs(heap_fs)
         self.heap_root = _coerce_root_dir(heap_fs, heap_root)
-        # Get all heap files
-        log.info(f"List out heap files in {self.heap_root}")
-        lister = ParallelLister(
-            fs=self.heap_fs,
-            root=self.heap_root,
-            parallel_file_listing=parallel_listing,
-        )
-        heap_file_paths = [fi["name"] for fi in lister.list_files()]
-        # basename WITHOUT EXTENSION corresponds to the md5
-        self.heap_md5s = set([os.path.basename(p).split(".")[0] for p in heap_file_paths])
-        log.info(f"Heap initialized: Found {len(self.heap_md5s)} files in heap")
+        self.parallel_listing = parallel_listing
+        self._heap_md5s : Set[str] | None = None
+
+    def load_md5s_if_not_yet_loaded(self):
+        # this call triggers the initialization of the heap_md5s if not done yet
+        dummy = self.heap_md5s
+        
+    @property
+    def heap_md5s(self) -> Set[str]:        
+        if self._heap_md5s is None:
+            # Get all heap files
+            log.info(f"List out heap files in {self.heap_root}")
+            lister = ParallelLister(
+                fs=self.heap_fs,
+                root=self.heap_root,
+                parallel_file_listing=self.parallel_listing,
+            )
+            heap_file_paths = [fi["name"] for fi in lister.list_files()]
+            # basename WITHOUT EXTENSION corresponds to the md5
+            self._heap_md5s = set([os.path.basename(p).split(".")[0] for p in heap_file_paths])
+            log.info(f"Heap initialized: Found {len(self._heap_md5s)} files in heap")
+        return self._heap_md5s
 
     def add_file_to_heap(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
         temp_file_path = f"{self.heap_root}/temp/{uuid.uuid4()}.gz"
@@ -260,7 +271,7 @@ class Snapshooter:
         """
         snap_glob      = FMT_PLACEHOLDER_REGEX.sub("*", SNAP_PATH_FMT)
         snapshot_files = self.snap_fs.glob(f"{self.snap_root}/{snap_glob}")
-        return snapshot_files
+        return list(reversed(snapshot_files))
 
     def try_get_snapshot_path(
         self, 
@@ -385,7 +396,9 @@ class Snapshooter:
         self,
         save_snapshot: bool = True,
         download_missing_files: bool = True
-    ) -> tuple[List[dict], datetime.datetime]:
+    ) -> tuple[List[dict], datetime.datetime, str | None]:
+        self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
+        
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         log.info(f"Making Snapshot with timestamp = '{timestamp}'")
 
@@ -429,9 +442,10 @@ class Snapshooter:
             downloader.process_files()
 
         if save_snapshot:
-            self._save_snapshot(snapshot, timestamp)
-
-        return snapshot, timestamp
+            snapshot_filepath = self._save_snapshot(snapshot, timestamp)
+        else:
+            snapshot_filepath = None
+        return snapshot, timestamp, snapshot_filepath
 
     def _save_snapshot(
         self,
@@ -461,6 +475,8 @@ class Snapshooter:
         save_snapshot_before : bool = True,
         save_snapshot_after  : bool = False,
     ):
+        self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
+
         log.info("Loading snapshot to restore")
         # read snapshot depending on the type of snapshot_to_restore
         if snapshot_to_restore is None:
@@ -478,7 +494,7 @@ class Snapshooter:
         log.info(f"Snapshot to restore loaded")
 
         log.info("Making current snapshot to apply diff to")
-        current_snapshot, _ = self.make_snapshot(save_snapshot=save_snapshot_before, download_missing_files=True)
+        current_snapshot, _, _ = self.make_snapshot(save_snapshot=save_snapshot_before, download_missing_files=True)
         log.info(f"Current snapshot made")
         df_current_snapshot = convert_snapshot_to_df(current_snapshot)
 
@@ -501,6 +517,8 @@ class Snapshooter:
             self.make_snapshot(save_snapshot=True, download_missing_files=True)
 
     def apply_diff(self, df_diff: pd.DataFrame):
+        self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
+
         if not isinstance(df_diff, pd.DataFrame):
             raise Exception(f"apply_diff: Unknown type {type(df_diff)} for diff. Expected: pd.DataFrame")
 

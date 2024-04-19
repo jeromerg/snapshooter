@@ -26,6 +26,7 @@ setuptools.setup(
         'pandas',
         'tabulate',
         'typer[all]',
+        'colorlog',
         'tzlocal',
     ],
     entry_points={
