@@ -40,7 +40,7 @@ DEFAULT_HEAP_FS        = fsspec.filesystem("file")
 # Remark: change HEAP_FMT_FN to change the buckets size of md5 files.
 HEAP_FMT_FN            = lambda md5: f"{md5[:2]}/{md5}.gz"
 BLOCK_SIZE             = 8 * 1024 * 1024  # 8MB
-
+PARALLEL_DEFAULT       = 20
 
 def _coerce_fs(fs: AbstractFileSystem | str) -> AbstractFileSystem:
     if isinstance(fs, str):
@@ -120,7 +120,8 @@ class Heap:
         self,
         heap_fs   : AbstractFileSystem,
         heap_root : str,
-        parallel_listing: int = 20,
+        parallel_listing: int = PARALLEL_DEFAULT,
+        cache_local_file: str | None = None,
     ) -> None:
         """ Create a new Snapshooter instance.
 
@@ -130,6 +131,7 @@ class Heap:
         self.heap_fs   = _coerce_fs(heap_fs)
         self.heap_root = _coerce_root_dir(heap_fs, heap_root)
         self.parallel_listing = parallel_listing
+        self.cache_local_file = cache_local_file
         self._heap_md5s : Set[str] | None = None
 
     def load_md5s_if_not_yet_loaded(self):
@@ -139,6 +141,19 @@ class Heap:
     @property
     def heap_md5s(self) -> Set[str]:        
         if self._heap_md5s is None:
+            if self.cache_local_file is not None and os.path.exists(self.cache_local_file):
+                try:
+                    log.info(f"Loading heap from cache '{self.cache_local_file}'")
+                    with open(self.cache_local_file, "rb") as f, gzip.GzipFile(fileobj=f, mode='rb') as g:
+                        text = g.read().decode("utf-8")
+                    md5s_list = json.loads(text)
+                    self._heap_md5s = set(md5s_list)
+                    log.info(f"Heap initialized from cache: Found {len(self._heap_md5s)} files in heap")
+                    return self._heap_md5s
+                except Exception:
+                    log.exception(f"Error loading heap from cache '{self.cache_local_file}'")
+                    raise
+                    
             # Get all heap files
             log.info(f"List out heap files in {self.heap_root}")
             lister = ParallelLister(
@@ -150,6 +165,18 @@ class Heap:
             # basename WITHOUT EXTENSION corresponds to the md5
             self._heap_md5s = set([os.path.basename(p).split(".")[0] for p in heap_file_paths])
             log.info(f"Heap initialized: Found {len(self._heap_md5s)} files in heap")
+            
+            if self.cache_local_file is not None:
+                try:
+                    log.info(f"Saving heap to cache '{self.cache_local_file}'")
+                    os.makedirs(os.path.dirname(self.cache_local_file), exist_ok=True)
+                    text = json.dumps(list(self._heap_md5s))
+                    with open(self.cache_local_file, "wb") as f, gzip.GzipFile(fileobj=f, mode='wb') as g:
+                        g.write(text.encode("utf-8"))
+                    log.info(f"Heap saved to cache")
+                except Exception:
+                    log.exception(f"Error saving heap to cache '{self.cache_local_file}'")
+                    raise
         return self._heap_md5s
 
     def add_file_to_heap(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
@@ -209,10 +236,10 @@ class Snapshooter:
         snap_fs   : AbstractFileSystem,
         snap_root : str,
         heap      : Heap,
-        parallel_copy_to_heap   : int = 20,
-        parallel_copy_to_file   : int = 20,
-        parallel_delete_in_file : int = 20,
-        parallel_listing        : int = 20,
+        parallel_copy_to_heap   : int = PARALLEL_DEFAULT,
+        parallel_copy_to_file   : int = PARALLEL_DEFAULT,
+        parallel_delete_in_file : int = PARALLEL_DEFAULT,
+        parallel_listing        : int = PARALLEL_DEFAULT,
     ) -> None:
         """ Create a new Snapshooter instance.
 

@@ -31,11 +31,14 @@ def test_main_functionalities(data_root):
     original_file_root = f"{this_file_dir}/unit_test_data/sample_src"
     changed_file_root  = f"{this_file_dir}/unit_test_data/sample_src_added_and_removed_files"
     restored_root      = f"{data_root}/restored"
+    cache_root         = f"{data_root}/cache"
+    heap_cache_file    = f"{cache_root}/heap_cache.json.gz"
     os.makedirs(heap_root          , exist_ok=True)
     os.makedirs(snap_root          , exist_ok=True)
     os.makedirs(original_file_root , exist_ok=True)
     os.makedirs(changed_file_root  , exist_ok=True)
     os.makedirs(restored_root      , exist_ok=True)
+    os.makedirs(cache_root         , exist_ok=True)
 
     # ---------------------------------------------------------
     # create a snapshot of the original file root
@@ -44,6 +47,7 @@ def test_main_functionalities(data_root):
     heap = Heap(
         heap_fs=fs,
         heap_root=heap_root,
+        cache_local_file=heap_cache_file
     )
 
     snapshooter = Snapshooter(
@@ -65,7 +69,7 @@ def test_main_functionalities(data_root):
     assert snap[1]["name"] == "subfolder/another_text_file.txt"
     assert snap[2]["name"] == "text_file.txt"
     assert snap[0]["md5" ] == "b6f750f20a040a360774725bae513f17"
-    assert snap[1]["md5" ] == "d41d8cd98f00b204e9800998ecf8427e"
+    assert snap[1]["md5" ] == "38370d56e3e114d73ebedd6ac7b19028"
     assert snap[2]["md5" ] == "41060d3ddfdf63e68fc2bf196f652ee9"
     
     snapshot_path = snapshooter._save_snapshot(snap, timestamp)
@@ -107,7 +111,7 @@ def test_main_functionalities(data_root):
     assert ls[1] == "subfolder/another_text_file.txt"
     assert ls[2] == "text_file.txt"
     assert get_file_md5(f"{data_root}/restored/{ls[0]}") == "b6f750f20a040a360774725bae513f17"
-    assert get_file_md5(f"{data_root}/restored/{ls[1]}") == "d41d8cd98f00b204e9800998ecf8427e"
+    assert get_file_md5(f"{data_root}/restored/{ls[1]}") == "38370d56e3e114d73ebedd6ac7b19028"
     assert get_file_md5(f"{data_root}/restored/{ls[2]}") == "41060d3ddfdf63e68fc2bf196f652ee9"
 
     # ---------------------------------------------------------
@@ -117,6 +121,7 @@ def test_main_functionalities(data_root):
     heap = Heap(
         heap_fs=fs,
         heap_root=heap_root,
+        cache_local_file=heap_cache_file
     )
 
     snapshooter = Snapshooter(
@@ -138,7 +143,7 @@ def test_main_functionalities(data_root):
     assert snap[1]["name"] == "subfolder/another_text_file.txt"
     assert snap[2]["name"] == "text_file_added.txt"
     assert snap[0]["md5" ] == "b6f750f20a040a360774725bae513f17"
-    assert snap[1]["md5" ] == "d41d8cd98f00b204e9800998ecf8427e"
+    assert snap[1]["md5" ] == "5c6067f43a7a6f4013c58b0044697dc6"
     assert snap[2]["md5" ] == "d4802cf7c3fbd0e78bf95f5e57464419"
     
     snapshot_path = snapshooter._save_snapshot(snap, timestamp)
@@ -178,6 +183,6 @@ def test_main_functionalities(data_root):
     assert ls[1] == "subfolder/another_text_file.txt"
     assert ls[2] == "text_file_added.txt"
     assert get_file_md5(f"{data_root}/restored/{ls[0]}") == "b6f750f20a040a360774725bae513f17"
-    assert get_file_md5(f"{data_root}/restored/{ls[1]}") == "d41d8cd98f00b204e9800998ecf8427e"
+    assert get_file_md5(f"{data_root}/restored/{ls[1]}") == "5c6067f43a7a6f4013c58b0044697dc6"
     assert get_file_md5(f"{data_root}/restored/{ls[2]}") == "d4802cf7c3fbd0e78bf95f5e57464419"
     
