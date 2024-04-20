@@ -823,7 +823,7 @@ class ParallelCopyHeapToFile(ParallelFileProcessor):
             details["md5"] = md5
             details["name"] = file_relative_path
             with self.lock:
-                self.new_file_snapshot_by_relative_path[file_relative_path] = details
+                self.new_file_snapshot_by_relative_path[file_relative_path] = jsonify_file_info(details)
         except Exception as e:
             error_message = f"Error copying {file_relative_path}: {e}"
             error_message += "\n" + traceback.format_exc()
