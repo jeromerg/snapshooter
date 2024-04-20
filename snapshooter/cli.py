@@ -128,7 +128,7 @@ def restore_snapshot(
     path                 : Annotated[str, typer.Option(help="The path to the snapshot file to restore. If not set, then it will look for the latest snapshot available, that fulfills the --latest timestamp if provided")] = None,
     latest               : Annotated[str, typer.Option(help="If set, then look for the latest snapshot before or at this timestamp. Expected format is 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS[offset]'.")] = None,
     save_snapshot_before : Annotated[bool, typer.Option(help="Whether to save the current state into a 'backup' snapshot or not. Default is True.")] = True,
-    save_snapshot_after  : Annotated[bool, typer.Option(help="Whether to save the restored state into a 'backup' snapshot or not. Default is True.")] = False,
+    save_snapshot_after  : Annotated[bool, typer.Option(help="Whether to save the restored state into a 'backup' snapshot or not. Default is True.")] = True,
 ):
     snapshooter: Snapshooter = ctx.obj
     latest_timestamp = datetime.fromisoformat(latest) if latest is not None else None

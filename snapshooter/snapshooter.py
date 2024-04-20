@@ -13,7 +13,7 @@ import traceback
 import uuid
 from contextlib import contextmanager
 from io import BufferedReader
-from typing import Any, Generator, List, Dict, Set, Callable
+from typing import Any, Generator, List, Dict, Set, Callable, Tuple
 
 import fsspec
 import pandas as pd
@@ -397,6 +397,7 @@ class Snapshooter:
         save_snapshot: bool = True,
         download_missing_files: bool = True
     ) -> tuple[List[dict], datetime.datetime, str | None]:
+        """returns the snapshot, the timestamp of the snapshot and the path of the saved snapshot if requested with save_snapshot=True."""
         self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
         
         timestamp = datetime.datetime.now(datetime.timezone.utc)
@@ -473,8 +474,10 @@ class Snapshooter:
         snapshot_to_restore  : str | List[dict] | pd.DataFrame | None = None,
         latest_timestamp     : datetime.datetime = None,
         save_snapshot_before : bool = True,
-        save_snapshot_after  : bool = False,
-    ):
+        save_snapshot_after  : bool = True,
+    ) -> tuple[List[dict], datetime.datetime, str | None]:
+        """returns the new snapshot, the timestamp of the snapshot and the path of the saved snapshot if requested with save_snapshot=True."""
+      
         self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
 
         log.info("Loading snapshot to restore")
@@ -507,27 +510,35 @@ class Snapshooter:
         _create_folder_if_not_exists(self.file_fs, self.file_root, "root folder")
         
         log.info(f"Applying diff to restore {len(df_diff)} files")
-        self.apply_diff(df_diff)
-        
-        # finally save the latest state if requested
-        # Remark: There is space for optimization, because the snapshot 
-        # could be built from the snapshot before and the diff + missing file metadata for
-        # the files that were not in the snapshot before.
-        if save_snapshot_after:
-            self.make_snapshot(save_snapshot=True, download_missing_files=True)
+        new_file_snapshots_by_relative_path, relative_paths_deleted = self.apply_diff(df_diff)
 
-    def apply_diff(self, df_diff: pd.DataFrame):
+        new_snapshot_dict = {
+            **{file_snap["name"]: file_snap for file_snap in current_snapshot if file_snap["name"] not in relative_paths_deleted},
+            **new_file_snapshots_by_relative_path
+        }
+        new_snapshot = list(new_snapshot_dict.values())
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+        log.info(f"Making Snapshot with timestamp = '{timestamp}'")
+        
+        if save_snapshot_after:
+            snapshot_filepath = self._save_snapshot(new_snapshot, timestamp)
+        else:
+            snapshot_filepath = None
+        return new_snapshot, timestamp, snapshot_filepath
+
+    def apply_diff(self, df_diff: pd.DataFrame) -> Tuple[dict[dict], set]:
+        """returns the new snapshot information of the files that were copied and the removed file relative paths"""
         self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
 
         if not isinstance(df_diff, pd.DataFrame):
             raise Exception(f"apply_diff: Unknown type {type(df_diff)} for diff. Expected: pd.DataFrame")
 
-        relative_path_only_left  = set(df_diff[df_diff["status"] == "only_left"].index)
-        relative_path_only_right = set(df_diff[df_diff["status"] == "only_right"].index)
-        relative_path_different  = set(df_diff[df_diff["status"] == "different"].index)
+        relative_paths_to_add     = set(df_diff[df_diff["status"] == "only_left"].index)
+        relative_paths_to_delete  = set(df_diff[df_diff["status"] == "only_right"].index)
+        relative_paths_to_update  = set(df_diff[df_diff["status"] == "different"].index)
 
-        log.info(f"Copying files: {len(relative_path_only_left)} only_left + {len(relative_path_different)} different")
-        relative_paths_to_copy = sorted(relative_path_only_left | relative_path_different)
+        log.info(f"Copying files: {len(relative_paths_to_add)} only_left + {len(relative_paths_to_update)} different")
+        relative_paths_to_copy = sorted(relative_paths_to_add | relative_paths_to_update)
         parallel_job = ParallelCopyHeapToFile(
             file_fs                = self.file_fs,
             file_root              = self.file_root,
@@ -537,19 +548,23 @@ class Snapshooter:
             df_diff                = df_diff,
         )
         parallel_job.process_files()
+        new_file_snapshots_by_relative_path = parallel_job.new_file_snapshot_by_relative_path
 
-        log.info(f"Deleting {len(relative_path_only_right)} files")
+        log.info(f"Deleting {len(relative_paths_to_delete)} files")
         parallel_job = ParallelDeleteFile(
             file_fs                = self.file_fs,
             file_root              = self.file_root,
-            relative_paths_to_copy = relative_path_only_right,
+            relative_paths_to_copy = relative_paths_to_delete,
             heap                   = self.heap,
             parallelization        = self.parallel_delete_in_file,
         )
         parallel_job.process_files()
+        return new_file_snapshots_by_relative_path, relative_paths_to_delete
 
 
 class ParallelLister:
+    # todo: generalize ParallelFileProcessor and inherit from it here to increase code reuse
+    # (changes: instead of fixed list of files, make a queue like here, and add a process_queue method)
     def __init__(
         self,
         fs                    : AbstractFileSystem,
@@ -792,16 +807,23 @@ class ParallelCopyHeapToFile(ParallelFileProcessor):
     ):
         super().__init__(file_fs, file_root, relative_paths_to_copy, heap, parallelization)
         self.df_diff = df_diff
+        self.new_file_snapshot_by_relative_path = {}
 
     def _process_file(self, file_relative_path):
         try:
             md5 = self.df_diff.at[file_relative_path, "md5_left"]
-            src_file_path = f"{self.file_root}/{file_relative_path}"
+            file_absolute_path = f"{self.file_root}/{file_relative_path}"
             log.debug(f"Copying file with md5 '{md5}' to '{file_relative_path}'")
-            self.file_fs.makedirs(os.path.dirname(src_file_path), exist_ok=True)  # TODO: Optimze to avoid calling every times
+            self.file_fs.makedirs(os.path.dirname(file_absolute_path), exist_ok=True)  # TODO: Optimze to avoid calling every times
+            self.file_fs.cp_file
             with self.heap.open(md5) as src_file:
-                with self.file_fs.open(src_file_path, "wb") as dst_file:
+                with self.file_fs.open(file_absolute_path, "wb") as dst_file:
                     dst_file.write(src_file.read())
+            details = self.file_fs.info(file_absolute_path)
+            details["md5"] = md5
+            details["name"] = file_relative_path
+            with self.lock:
+                self.new_file_snapshot_by_relative_path[file_relative_path] = details
         except Exception as e:
             error_message = f"Error copying {file_relative_path}: {e}"
             error_message += "\n" + traceback.format_exc()
