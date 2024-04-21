@@ -1,25 +1,23 @@
-from abc import abstractmethod
+import concurrent.futures
 import datetime
 import gzip
 import hashlib
-import json
 import logging
 import os
 import queue
 import re
-import sqlite3
 import threading
 import time
 import traceback
 import uuid
+from abc import abstractmethod
 from contextlib import contextmanager
 from io import BufferedReader
-from typing import Any, Generator, List, Dict, Set, Callable, Tuple
+from typing import Any, Generator, Dict, Set, Callable, Tuple, List
 
 import fsspec
 import pandas as pd
 from fsspec import AbstractFileSystem
-import concurrent.futures
 
 from snapshooter.cache_utils import FileUniqueStringCache, UniqueStringCache
 from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key, patch_AbstractFileSystem_str_function
@@ -44,6 +42,7 @@ DEFAULT_HEAP_FS        = fsspec.filesystem("file")
 HEAP_FMT_FN            = lambda md5: f"{md5[:2]}/{md5}.gz"
 BLOCK_SIZE             = 8 * 1024 * 1024  # 8MB
 DEFAULT_PARALLEL       = 20
+
 
 def _coerce_fs(fs: AbstractFileSystem | str) -> AbstractFileSystem:
     if isinstance(fs, str):
@@ -155,7 +154,7 @@ class Heap:
         self.ensure_init()
         return self.md5s_cache.contains(md5)
 
-    def add(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
+    def add_file(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
         temp_file_path = f"{self.heap_root}/temp/{uuid.uuid4()}.gz"
         self.heap_fs.makedirs(f"{self.heap_root}/temp", exist_ok=True)
         md5_digester = hashlib.md5()
@@ -180,13 +179,13 @@ class Heap:
 
             if self.md5s_cache.contains(md5):
                 log.debug(f"MD5 '{md5}' already exists in heap, skipping")
-                return md5, False
+                return md5
 
             log.debug(f"Saving file with md5 '{md5}' to '{heap_file_path_relative}'")
             self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
             self.heap_fs.mv(temp_file_path, heap_file_path)
             self.md5s_cache.add(md5)
-            return md5, True
+            return md5
         except:
             # if something went wrong, the temp file may still exist and should be removed
             try:
@@ -234,7 +233,6 @@ class Snapshooter:
         self.parallel_copy_to_file   : int  = parallel_copy_to_file
         self.parallel_delete_in_file : int  = parallel_delete_in_file
         self.parallel_listing        : int  = parallel_listing
-        
 
     def convert_snapshot_timestamp_to_path(self, timestamp: datetime.datetime) -> str:
         """ Convert the given timestamp to a snapshot file path.
@@ -242,7 +240,7 @@ class Snapshooter:
         :param timestamp: The timestamp of the snapshot.
         :return: The path of the snapshot file.
         """
-        # if timestamp is naiv, then assume local time
+        # if timestamp is naive, then assume local time
         if timestamp.tzinfo is None or timestamp.tzinfo.utcoffset(timestamp) is None:
             timestamp = timestamp.astimezone()
         
@@ -297,7 +295,7 @@ class Snapshooter:
         # slice the list of snapshots to the one before the given timestamp    
         snapshot_path = None
         if latest_timestamp is not None:
-            # if timestamp is naiv, then assume local time
+            # if timestamp is naive, then assume local time
             if latest_timestamp.tzinfo is None or latest_timestamp.tzinfo.utcoffset(latest_timestamp) is None:
                 latest_timestamp = latest_timestamp.astimezone()
             # convert to utc
@@ -431,7 +429,7 @@ class Snapshooter:
         else:
             file_names_missings = set()
 
-        all_file_names_to_download = file_names_without_md5 | file_names_missings
+        all_file_names_to_download = sorted(file_names_without_md5 | file_names_missings)
         if len(all_file_names_to_download) > 0:
             log.info(f"Downloading {len(all_file_names_to_download)} files to heap")
 
@@ -508,21 +506,21 @@ class Snapshooter:
 
         if df_diff["status"].eq("equal").all():
             log.info(f"No files to restore, all {len(df_diff)} files are equal")
-            return
-        
-        _create_folder_if_not_exists(self.file_fs, self.file_root, "root folder")
-        
-        log.info(f"Applying diff to restore {len(df_diff)} files")
-        new_file_snapshots_by_relative_path, relative_paths_deleted = self.apply_diff(df_diff)
+            new_snapshot = current_snapshot
+        else:
+            _create_folder_if_not_exists(self.file_fs, self.file_root, "root folder")
 
-        new_snapshot_dict = {
-            **{file_snap["name"]: file_snap for file_snap in current_snapshot if file_snap["name"] not in relative_paths_deleted},
-            **new_file_snapshots_by_relative_path
-        }
-        new_snapshot = list(new_snapshot_dict.values())
+            log.info(f"Applying diff to restore {len(df_diff)} files")
+            new_file_snapshots_by_relative_path, relative_paths_deleted = self.apply_diff(df_diff)
+
+            new_snapshot_dict = {
+                **{file_snap["name"]: file_snap for file_snap in current_snapshot if file_snap["name"] not in relative_paths_deleted},
+                **new_file_snapshots_by_relative_path
+            }
+            new_snapshot = list(new_snapshot_dict.values())
+
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         log.info(f"Making Snapshot with timestamp = '{timestamp}'")
-        
         if save_snapshot_after:
             snapshot_filepath = self._save_snapshot(new_snapshot, timestamp)
         else:
@@ -536,12 +534,13 @@ class Snapshooter:
         if not isinstance(df_diff, pd.DataFrame):
             raise Exception(f"apply_diff: Unknown type {type(df_diff)} for diff. Expected: pd.DataFrame")
 
-        relative_paths_to_add     = set(df_diff[df_diff["status"] == "only_left"].index)
-        relative_paths_to_delete  = set(df_diff[df_diff["status"] == "only_right"].index)
-        relative_paths_to_update  = set(df_diff[df_diff["status"] == "different"].index)
+        relative_paths_to_add_set    = set(df_diff[df_diff["status"] == "only_left"].index)
+        relative_paths_to_update_set = set(df_diff[df_diff["status"] == "different"].index)
+        relative_paths_to_delete_set = set(df_diff[df_diff["status"] == "only_right"].index)
+        relative_paths_to_copy       = sorted(relative_paths_to_add_set | relative_paths_to_update_set)
+        relative_paths_to_delete     = sorted(relative_paths_to_delete_set)
 
-        log.info(f"Copying files: {len(relative_paths_to_add)} only_left + {len(relative_paths_to_update)} different")
-        relative_paths_to_copy = sorted(relative_paths_to_add | relative_paths_to_update)
+        log.info(f"Copying files: {len(relative_paths_to_add_set)} only_left + {len(relative_paths_to_update_set)} different")
         parallel_job = ParallelCopyHeapToFile(
             file_fs                = self.file_fs,
             file_root              = self.file_root,
@@ -562,7 +561,7 @@ class Snapshooter:
             parallelization        = self.parallel_delete_in_file,
         )
         parallel_job.process_files()
-        return new_file_snapshots_by_relative_path, relative_paths_to_delete
+        return new_file_snapshots_by_relative_path, relative_paths_to_delete_set
 
 
 class ParallelLister:
@@ -635,22 +634,21 @@ class ParallelLister:
             raise Exception(f"ParallelLister: Errors occurred during file listing:\n{error_summary}")
         else:
             elapsed_time = time.monotonic() - tic
-            files_per_seconds = len(self.result) / elapsed_time
+            files_per_seconds = len(self.result) / (elapsed_time + 1e-6)  # avoid division by zero
             log.info(f"ParallelLister: Listed {len(self.result)} files in {elapsed_time:.2f} seconds ({files_per_seconds:.2f} files/s)")
-
         return self.result
 
     def _list_dir(self, directory: str):
-            # all_details  = self.fs.find(directory, detail=True, withdirs=True, maxdepth=0).values()
-            # all_details  = list(all_details)
-            all_details    = self.fs.ls(directory, detail=True)
-            all_details    = [d for d in all_details if d["name"] != directory]  # avoid endless loop
-            sub_dir_infos  = [d for d in all_details if d['type'] == 'directory']
-            src_file_infos = [d for d in all_details if d['type'] == 'file']
-            for sub_dir_info in sub_dir_infos:
-                self.dir_queue.put(sub_dir_info['name'])
-            with self.lock:
-                self.result.extend(src_file_infos)
+        # all_details  = self.fs.find(directory, detail=True, withdirs=True, maxdepth=0).values()
+        # all_details  = list(all_details)
+        all_details    = self.fs.ls(directory, detail=True)
+        all_details    = [d for d in all_details if d["name"] != directory]  # avoid endless loop
+        sub_dir_infos  = [d for d in all_details if d['type'] == 'directory']
+        src_file_infos = [d for d in all_details if d['type'] == 'file']
+        for sub_dir_info in sub_dir_infos:
+            self.dir_queue.put(sub_dir_info['name'])
+        with self.lock:
+            self.result.extend(src_file_infos)
 
     def _process_queue(self):
         try:
@@ -686,7 +684,7 @@ class ParallelFileProcessor:
         self,
         file_fs                : AbstractFileSystem,
         file_root              : str,
-        relative_paths_to_copy : Set[str],
+        relative_paths_to_copy : List[str],
         heap                   : Heap,
         parallelization        : int,
     ):
@@ -735,7 +733,7 @@ class ParallelFileProcessor:
             raise Exception(f"{self.__class__.__name__}: Errors occurred during files processing:\n{error_summary}")
         else:
             elapsed_time = time.monotonic() - tic
-            files_per_second = len(self.relative_paths_to_process) / elapsed_time
+            files_per_second = len(self.relative_paths_to_process) / (elapsed_time + 1e-6)  # avoid division by zero
             log.info(
                 f"{self.__class__.__name__}: Processing {len(self.relative_paths_to_process)} files with {self.parallelization} workers "
                 f"in {elapsed_time:.2f} seconds ({files_per_second:.2f} files/s)"
@@ -761,7 +759,7 @@ class ParallelCopyFileToHeap(ParallelFileProcessor):
         self,
         file_fs                : AbstractFileSystem,
         file_root              : str,
-        relative_paths_to_copy : Set[str],
+        relative_paths_to_copy : List[str],
         heap                   : Heap,
         parallelization        : int,
         snapshot_files_by_name : Dict[str, dict],
@@ -776,7 +774,7 @@ class ParallelCopyFileToHeap(ParallelFileProcessor):
             log.debug(f"{self.__class__.__name__}: Downloading '{file_relative_path}'")
             self.check_interrupted()
             with self.file_fs.open(src_file_path, "rb") as f:
-                src_file_md5, _ = self.heap.add(f, self.check_interrupted)
+                src_file_md5 = self.heap.add_file(f, self.check_interrupted)
 
             if "md5" in src_file_info:
                 if src_file_info["md5"] != src_file_md5:
@@ -803,24 +801,26 @@ class ParallelCopyHeapToFile(ParallelFileProcessor):
         self,
         file_fs                : AbstractFileSystem,
         file_root              : str,
-        relative_paths_to_copy : Set[str],
+        relative_paths_to_copy : List[str],
         heap                   : Heap,
         parallelization        : int,
         df_diff                : pd.DataFrame,
     ):
         super().__init__(file_fs, file_root, relative_paths_to_copy, heap, parallelization)
         self.df_diff = df_diff
-        self.new_file_snapshot_by_relative_path = {}
+        # noinspection PyTypeChecker
+        self.new_file_snapshot_by_relative_path : dict[dict] = {}
 
     def _process_file(self, file_relative_path):
         try:
             md5 = self.df_diff.at[file_relative_path, "md5_left"]
             file_absolute_path = f"{self.file_root}/{file_relative_path}"
             log.debug(f"Copying file with md5 '{md5}' to '{file_relative_path}'")
-            self.file_fs.makedirs(os.path.dirname(file_absolute_path), exist_ok=True)  # TODO: Optimze to avoid calling every times
-            self.file_fs.cp_file
+            self.file_fs.makedirs(os.path.dirname(file_absolute_path), exist_ok=True)  # TODO: Optimize to avoid calling every times
+            # noinspection PyArgumentList
             with self.heap.open(md5) as src_file:
                 with self.file_fs.open(file_absolute_path, "wb") as dst_file:
+                    # noinspection PyUnresolvedReferences
                     dst_file.write(src_file.read())
             details = self.file_fs.info(file_absolute_path)
             details["md5"] = md5
@@ -843,7 +843,7 @@ class ParallelDeleteFile(ParallelFileProcessor):
         self,
         file_fs                : AbstractFileSystem,
         file_root              : str,
-        relative_paths_to_copy : Set[str],
+        relative_paths_to_copy : List[str],
         heap                   : Heap,
         parallelization        : int,
     ):
