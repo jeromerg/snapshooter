@@ -16,7 +16,7 @@ class UniqueStringCache:
         if self.md5s is None:
             log.info(f"initializing cache from loader")
             self.md5s = self.md5s_loader()
-            log.log(f"loaded {len(self.md5s)} md5s from loader")
+            log.info(f"loaded {len(self.md5s)} md5s from loader")
         return self.md5s
         
     def contains(self, md5: str) -> bool:
