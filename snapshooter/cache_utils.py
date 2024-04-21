@@ -1,6 +1,10 @@
+import logging
 import os
 import threading
 from typing import Callable, Optional
+
+
+log = logging.getLogger(__name__)
 
 
 class UniqueStringCache:
@@ -10,7 +14,9 @@ class UniqueStringCache:
 
     def ensure_init(self):
         if self.md5s is None:
+            log.info(f"initializing cache from loader")
             self.md5s = self.md5s_loader()
+            log.log(f"loaded {len(self.md5s)} md5s from loader")
         return self.md5s
         
     def contains(self, md5: str) -> bool:
@@ -45,16 +51,20 @@ class FileUniqueStringCache(UniqueStringCache):
 
             # ok, I am the first one to acquire the lock, I get the duty to initialize
             if not os.path.isfile(self.local_file):
+                log.info(f"initializing cache from loader")
                 # cache did not pre-exist, load from loader
                 self.md5s = self.md5s_loader()
                 # additionally save to file too...
                 with open(self.local_file, "w") as f:
                     for md5 in self.md5s:
-                        f.write(md5 + "\n")        
+                        f.write(md5 + "\n")
+                log.info(f"loaded {len(self.md5s)} md5s from loader, saved to {self.local_file}")
             else:
+                log.info(f"initializing cache from {self.local_file}")
                 # cache pre-existed, load from file
                 with open(self.local_file, "r") as f:
                     self.md5s = set(f.read().splitlines())
+                log.info(f"loaded {len(self.md5s)} md5s from {self.local_file}")
         return self.md5s
         
     def add(self, md5: str) -> None:
