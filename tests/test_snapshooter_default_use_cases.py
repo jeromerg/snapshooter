@@ -32,7 +32,7 @@ def test_main_functionalities(data_root):
     changed_file_root  = f"{this_file_dir}/unit_test_data/sample_src_added_and_removed_files"
     restored_root      = f"{data_root}/restored"
     cache_root         = f"{data_root}/cache"
-    heap_cache_file    = f"{cache_root}/heap_cache.json.gz"
+    heap_cache_file    = f"{cache_root}/heap_cache"
     os.makedirs(heap_root          , exist_ok=True)
     os.makedirs(snap_root          , exist_ok=True)
     os.makedirs(original_file_root , exist_ok=True)
@@ -47,7 +47,7 @@ def test_main_functionalities(data_root):
     heap = Heap(
         heap_fs=fs,
         heap_root=heap_root,
-        cache_local_file=heap_cache_file
+        heap_cache_file=heap_cache_file
     )
 
     snapshooter = Snapshooter(
@@ -121,7 +121,7 @@ def test_main_functionalities(data_root):
     heap = Heap(
         heap_fs=fs,
         heap_root=heap_root,
-        cache_local_file=heap_cache_file
+        heap_cache_file=heap_cache_file
     )
 
     snapshooter = Snapshooter(

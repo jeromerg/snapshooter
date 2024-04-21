@@ -7,6 +7,7 @@ import logging
 import os
 import queue
 import re
+import sqlite3
 import threading
 import time
 import traceback
@@ -19,6 +20,8 @@ import fsspec
 import pandas as pd
 from fsspec import AbstractFileSystem
 import concurrent.futures
+
+from snapshooter.cache_utils import FileUniqueStringCache, UniqueStringCache
 from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key, patch_AbstractFileSystem_str_function
 from .jsonl_utils import dumps_jsonl, loads_jsonl
 
@@ -40,7 +43,7 @@ DEFAULT_HEAP_FS        = fsspec.filesystem("file")
 # Remark: change HEAP_FMT_FN to change the buckets size of md5 files.
 HEAP_FMT_FN            = lambda md5: f"{md5[:2]}/{md5}.gz"
 BLOCK_SIZE             = 8 * 1024 * 1024  # 8MB
-PARALLEL_DEFAULT       = 20
+DEFAULT_PARALLEL       = 20
 
 def _coerce_fs(fs: AbstractFileSystem | str) -> AbstractFileSystem:
     if isinstance(fs, str):
@@ -113,73 +116,46 @@ def compare_snapshots(
     log.info(f"Snapshot comparison stats: {stats_json}")
 
     return df
-
+    
 
 class Heap:
+    """ The heap class stores files by their checksum and then supports deduplication of files by their checksum."""
     def __init__(
         self,
-        heap_fs   : AbstractFileSystem,
-        heap_root : str,
-        parallel_listing: int = PARALLEL_DEFAULT,
-        cache_local_file: str | None = None,
+        heap_fs               : AbstractFileSystem,
+        heap_root             : str,
+        parallel_listing      : int = DEFAULT_PARALLEL,
+        heap_cache_file       : str | None = None,
     ) -> None:
-        """ Create a new Snapshooter instance.
-
-        :param heap_fs: The file system of the heap files.
-        :param heap_root: The root directory of the heap files.
-        """
-        self.heap_fs   = _coerce_fs(heap_fs)
-        self.heap_root = _coerce_root_dir(heap_fs, heap_root)
+        self.heap_fs          = _coerce_fs(heap_fs)
+        self.heap_root        = _coerce_root_dir(heap_fs, heap_root)
         self.parallel_listing = parallel_listing
-        self.cache_local_file = cache_local_file
-        self._heap_md5s : Set[str] | None = None
+        if heap_cache_file is None:
+            self.md5s_cache = UniqueStringCache(lambda: self._get_md5s_from_fs())
+        else:
+            self.md5s_cache = FileUniqueStringCache(lambda: self._get_md5s_from_fs(), heap_cache_file)
 
-    def load_md5s_if_not_yet_loaded(self):
-        # this call triggers the initialization of the heap_md5s if not done yet
-        dummy = self.heap_md5s
-        
-    @property
-    def heap_md5s(self) -> Set[str]:        
-        if self._heap_md5s is None:
-            if self.cache_local_file is not None and os.path.exists(self.cache_local_file):
-                try:
-                    log.info(f"Loading heap from cache '{self.cache_local_file}'")
-                    with open(self.cache_local_file, "rb") as f, gzip.GzipFile(fileobj=f, mode='rb') as g:
-                        text = g.read().decode("utf-8")
-                    md5s_list = json.loads(text)
-                    self._heap_md5s = set(md5s_list)
-                    log.info(f"Heap initialized from cache: Found {len(self._heap_md5s)} files in heap")
-                    return self._heap_md5s
-                except Exception:
-                    log.exception(f"Error loading heap from cache '{self.cache_local_file}'")
-                    raise
-                    
-            # Get all heap files
-            log.info(f"List out heap files in {self.heap_root}")
-            lister = ParallelLister(
-                fs=self.heap_fs,
-                root=self.heap_root,
-                parallel_file_listing=self.parallel_listing,
-            )
-            heap_file_paths = [fi["name"] for fi in lister.list_files()]
-            # basename WITHOUT EXTENSION corresponds to the md5
-            self._heap_md5s = set([os.path.basename(p).split(".")[0] for p in heap_file_paths])
-            log.info(f"Heap initialized: Found {len(self._heap_md5s)} files in heap")
-            
-            if self.cache_local_file is not None:
-                try:
-                    log.info(f"Saving heap to cache '{self.cache_local_file}'")
-                    os.makedirs(os.path.dirname(self.cache_local_file), exist_ok=True)
-                    text = json.dumps(list(self._heap_md5s))
-                    with open(self.cache_local_file, "wb") as f, gzip.GzipFile(fileobj=f, mode='wb') as g:
-                        g.write(text.encode("utf-8"))
-                    log.info(f"Heap saved to cache")
-                except Exception:
-                    log.exception(f"Error saving heap to cache '{self.cache_local_file}'")
-                    raise
-        return self._heap_md5s
+    def _get_md5s_from_fs(self) -> Set[str]:
+        log.info(f"List out heap files in {self.heap_root}")
+        lister = ParallelLister(
+            fs=self.heap_fs,
+            root=self.heap_root,
+            parallel_file_listing=self.parallel_listing,
+        )
+        heap_file_paths = [fi["name"] for fi in lister.list_files()]
+        # basename WITHOUT EXTENSION corresponds to the md5
+        heap_md5s = set([os.path.basename(p).split(".")[0] for p in heap_file_paths])
+        log.info(f"Heap initialized: Found {len(heap_md5s)} files in heap")
+        return heap_md5s
+    
+    def ensure_init(self):        
+        self.md5s_cache.ensure_init()
 
-    def add_file_to_heap(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
+    def contains(self, md5: str) -> bool:
+        self.ensure_init()
+        return self.md5s_cache.contains(md5)
+
+    def add(self, f: BufferedReader, check_interrupted_fn: Callable) -> str:
         temp_file_path = f"{self.heap_root}/temp/{uuid.uuid4()}.gz"
         self.heap_fs.makedirs(f"{self.heap_root}/temp", exist_ok=True)
         md5_digester = hashlib.md5()
@@ -202,15 +178,15 @@ class Heap:
             heap_file_path_relative = HEAP_FMT_FN(md5)
             heap_file_path          = f"{self.heap_root}/{heap_file_path_relative}"
 
-            if md5 in self.heap_md5s:
+            if self.md5s_cache.contains(md5):
                 log.debug(f"MD5 '{md5}' already exists in heap, skipping")
-                return md5
+                return md5, False
 
             log.debug(f"Saving file with md5 '{md5}' to '{heap_file_path_relative}'")
             self.heap_fs.makedirs(os.path.dirname(heap_file_path), exist_ok=True)
             self.heap_fs.mv(temp_file_path, heap_file_path)
-            self.heap_md5s.add(md5)
-            return md5
+            self.md5s_cache.add(md5)
+            return md5, True
         except:
             # if something went wrong, the temp file may still exist and should be removed
             try:
@@ -236,10 +212,10 @@ class Snapshooter:
         snap_fs   : AbstractFileSystem,
         snap_root : str,
         heap      : Heap,
-        parallel_copy_to_heap   : int = PARALLEL_DEFAULT,
-        parallel_copy_to_file   : int = PARALLEL_DEFAULT,
-        parallel_delete_in_file : int = PARALLEL_DEFAULT,
-        parallel_listing        : int = PARALLEL_DEFAULT,
+        parallel_copy_to_heap   : int = DEFAULT_PARALLEL,
+        parallel_copy_to_file   : int = DEFAULT_PARALLEL,
+        parallel_delete_in_file : int = DEFAULT_PARALLEL,
+        parallel_listing        : int = DEFAULT_PARALLEL,
     ) -> None:
         """ Create a new Snapshooter instance.
 
@@ -425,7 +401,7 @@ class Snapshooter:
         download_missing_files: bool = True
     ) -> tuple[List[dict], datetime.datetime, str | None]:
         """returns the snapshot, the timestamp of the snapshot and the path of the saved snapshot if requested with save_snapshot=True."""
-        self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
+        self.heap.ensure_init()  # cleaner logging if done here
         
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         log.info(f"Making Snapshot with timestamp = '{timestamp}'")
@@ -449,7 +425,7 @@ class Snapshooter:
             log.info(f"Found {len(file_names_without_md5)} files with missing md5... downloads required")
 
         if download_missing_files:
-            file_names_missings = {fi["name"] for fi in snapshot if "md5" not in fi or fi["md5"] not in self.heap.heap_md5s}
+            file_names_missings = {fi["name"] for fi in snapshot if "md5" not in fi or not self.heap.contains(fi["md5"])}
             if len(file_names_missings) > 0:
                 log.info(f"Found {len(file_names_missings)} missing files not in heap... downloads required")
         else:
@@ -505,7 +481,7 @@ class Snapshooter:
     ) -> tuple[List[dict], datetime.datetime, str | None]:
         """returns the new snapshot, the timestamp of the snapshot and the path of the saved snapshot if requested with save_snapshot=True."""
       
-        self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
+        self.heap.ensure_init()  # cleaner logging if done here
 
         log.info("Loading snapshot to restore")
         # read snapshot depending on the type of snapshot_to_restore
@@ -555,7 +531,7 @@ class Snapshooter:
 
     def apply_diff(self, df_diff: pd.DataFrame) -> Tuple[dict[dict], set]:
         """returns the new snapshot information of the files that were copied and the removed file relative paths"""
-        self.heap.load_md5s_if_not_yet_loaded()  # cleaner logging if done here
+        self.heap.ensure_init()  # cleaner logging if done here
 
         if not isinstance(df_diff, pd.DataFrame):
             raise Exception(f"apply_diff: Unknown type {type(df_diff)} for diff. Expected: pd.DataFrame")
@@ -800,7 +776,7 @@ class ParallelCopyFileToHeap(ParallelFileProcessor):
             log.debug(f"{self.__class__.__name__}: Downloading '{file_relative_path}'")
             self.check_interrupted()
             with self.file_fs.open(src_file_path, "rb") as f:
-                src_file_md5 = self.heap.add_file_to_heap(f, self.check_interrupted)
+                src_file_md5, _ = self.heap.add(f, self.check_interrupted)
 
             if "md5" in src_file_info:
                 if src_file_info["md5"] != src_file_md5:

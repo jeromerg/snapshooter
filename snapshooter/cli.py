@@ -12,7 +12,7 @@ import typer
 from typing_extensions import Annotated
 from snapshooter import Heap, Snapshooter, convert_snapshot_to_df, compare_snapshots as compare_snapshots_
 from snapshooter.fsspec_utils import natural_sort_key
-from snapshooter.snapshooter import PARALLEL_DEFAULT
+from snapshooter.snapshooter import DEFAULT_PARALLEL
 
 
 class LogLevel(str, Enum):
@@ -71,12 +71,12 @@ def shared_to_all_commands(
     file_storage_options    : Annotated[str, typer.Option(envvar="FILE_STORAGE_OPTIONS"    , help="Additional storage options to pass to fsspec dir file system. expected JSON string")] = None,
     heap_storage_options    : Annotated[str, typer.Option(envvar="HEAP_STORAGE_OPTIONS"    , help="Additional storage options to pass to fsspec heap_dir file system. expected JSON string")] = None,
     snap_storage_options    : Annotated[str, typer.Option(envvar="SNAP_STORAGE_OPTIONS"    , help="Additional storage options to pass to fsspec snap_dir file system. expected JSON string")] = None,
-    heap_cache_local_file   : Annotated[str, typer.Option(envvar="HEAP_CACHE_LOCAL_FILE"   , help="The local file to use as cache for the heap.")] = None, 
-    parallel_copy_to_heap   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_HEAP"   , help="Number of parallel threads to use for copying files to heap")]  = PARALLEL_DEFAULT,
-    parallel_copy_to_file   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_FILE"   , help="Number of parallel threads to use for copying files to file")]  = PARALLEL_DEFAULT,
-    parallel_delete_in_file : Annotated[int, typer.Option(envvar="PARALLEL_DELETE_IN_FILE" , help="Number of parallel threads to use for deleting files in file")] = PARALLEL_DEFAULT,
-    parallel_listing        : Annotated[int, typer.Option(envvar="PARALLEL_LISTING"        , help="Number of parallel threads to use for listing files in file")]  = PARALLEL_DEFAULT,
-    parallel_heap_listing   : Annotated[int, typer.Option(envvar="PARALLEL_HEAP_LISTING"   , help="Number of parallel threads to use for listing files in heap")]  = PARALLEL_DEFAULT,
+    heap_cache_file         : Annotated[str, typer.Option(envvar="HEAP_CACHE_FILE"         , help="Path to the heap cache file if provided")] = None, 
+    parallel_copy_to_heap   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_HEAP"   , help="Number of parallel threads to use for copying files to heap")]  = DEFAULT_PARALLEL,
+    parallel_copy_to_file   : Annotated[int, typer.Option(envvar="PARALLEL_COPY_TO_FILE"   , help="Number of parallel threads to use for copying files to file")]  = DEFAULT_PARALLEL,
+    parallel_delete_in_file : Annotated[int, typer.Option(envvar="PARALLEL_DELETE_IN_FILE" , help="Number of parallel threads to use for deleting files in file")] = DEFAULT_PARALLEL,
+    parallel_listing        : Annotated[int, typer.Option(envvar="PARALLEL_LISTING"        , help="Number of parallel threads to use for listing files in file")]  = DEFAULT_PARALLEL,
+    parallel_heap_listing   : Annotated[int, typer.Option(envvar="PARALLEL_HEAP_LISTING"   , help="Number of parallel threads to use for listing files in heap")]  = DEFAULT_PARALLEL,
     loglevel                : Annotated[LogLevel, typer.Option(envvar="LOGLEVEL"           , help="The log level to use. Default is INFO.")] = "INFO",
 ):
     setup_logging(loglevel)
@@ -93,8 +93,9 @@ def shared_to_all_commands(
         heap_fs          = heap_fs, 
         heap_root        = heap_root, 
         parallel_listing = parallel_heap_listing,
-        cache_local_file = heap_cache_local_file
+        heap_cache_file  = heap_cache_file
     )
+    
     snapshooter = Snapshooter(
         file_fs                 = file_fs, 
         file_root               = file_root, 
@@ -128,18 +129,18 @@ def make_snapshot(
 @main_cli.command()
 def restore_snapshot(
     ctx                  : typer.Context,
-    path                 : Annotated[str, typer.Option(help="The path to the snapshot file to restore. If not set, then it will look for the latest snapshot available, that fulfills the --latest timestamp if provided")] = None,
-    latest               : Annotated[str, typer.Option(help="If set, then look for the latest snapshot before or at this timestamp. Expected format is 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS[offset]'.")] = None,
+    path                 : Annotated[str , typer.Option(help="The path to the snapshot file to restore. If not set, then it will look for the latest snapshot available, that fulfills the --latest timestamp if provided")] = None,
+    latest               : Annotated[str , typer.Option(help="If set, then look for the latest snapshot before or at this timestamp. Expected format is 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS[offset]'.")] = None,
     save_snapshot_before : Annotated[bool, typer.Option(help="Whether to save the current state into a 'backup' snapshot or not. Default is True.")] = True,
     save_snapshot_after  : Annotated[bool, typer.Option(help="Whether to save the restored state into a 'backup' snapshot or not. Default is True.")] = True,
 ):
     snapshooter: Snapshooter = ctx.obj
     latest_timestamp = datetime.fromisoformat(latest) if latest is not None else None
     snapshooter.restore_snapshot(
-        snapshot_to_restore=path,
-        latest_timestamp=latest_timestamp,
-        save_snapshot_before=save_snapshot_before,
-        save_snapshot_after=save_snapshot_after,
+        snapshot_to_restore  = path,
+        latest_timestamp     = latest_timestamp,
+        save_snapshot_before = save_snapshot_before,
+        save_snapshot_after  = save_snapshot_after,
     )
 
 
@@ -150,10 +151,10 @@ class SortOrder(str, Enum):
 
 @main_cli.command()
 def list_snapshots(
-    ctx: typer.Context,
-    limit: Annotated[int, typer.Option(help="The number of snapshots to list. Default is 10.")] = 10,
-    offset: Annotated[int, typer.Option(help="The offset to start listing snapshots. Default is 0.")] = 0,
-    order: Annotated[SortOrder, typer.Option(help="The order to list snapshots. Default is 'desc'.")] = "desc"
+    ctx    : typer.Context,
+    limit  : Annotated[int, typer.Option(help="The number of snapshots to list. Default is 10.")] = 10,
+    offset : Annotated[int, typer.Option(help="The offset to start listing snapshots. Default is 0.")] = 0,
+    order  : Annotated[SortOrder, typer.Option(help="The order to list snapshots. Default is 'desc'.")] = "desc"
 ):
     snapshooter: Snapshooter = ctx.obj
     snapshot_paths = snapshooter.get_snapshot_paths()
