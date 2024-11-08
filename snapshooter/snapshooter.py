@@ -547,7 +547,7 @@ class Snapshooter:
             relative_paths_to_copy = relative_paths_to_copy,
             heap                   = self.heap,
             parallelization        = self.parallel_copy_to_file,            
-            df_diff                = df_diff,
+            md5_series             = df_diff["md5_left"],
         )
         parallel_job.process_files()
         new_file_snapshots_by_relative_path = parallel_job.new_file_snapshot_by_relative_path
@@ -804,16 +804,16 @@ class ParallelCopyHeapToFile(ParallelFileProcessor):
         relative_paths_to_copy : List[str],
         heap                   : Heap,
         parallelization        : int,
-        df_diff                : pd.DataFrame,
+        md5_series             : pd.Series,
     ):
         super().__init__(file_fs, file_root, relative_paths_to_copy, heap, parallelization)
-        self.df_diff = df_diff
+        self.md5_series = md5_series
         # noinspection PyTypeChecker
         self.new_file_snapshot_by_relative_path : dict[dict] = {}
 
     def _process_file(self, file_relative_path):
         try:
-            md5 = self.df_diff.at[file_relative_path, "md5_left"]
+            md5 = self.md5_series.at[file_relative_path]
             file_absolute_path = f"{self.file_root}/{file_relative_path}"
             log.debug(f"Copying file with md5 '{md5}' to '{file_relative_path}'")
             self.file_fs.makedirs(os.path.dirname(file_absolute_path), exist_ok=True)  # TODO: Optimize to avoid calling every times
