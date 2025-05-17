@@ -4,7 +4,7 @@ import re
 from typing import Callable, Dict
 from fsspec import AbstractFileSystem
 
-from snapshooter.logging_utils import log_str
+from snapshooter.logging_utils import log_str, safe_log_key_value_str
 
 
 # try_find_md5_in_file_info_azure_fs(file_info: dict, bak_latest_snapshot:Dict[str, dict]) -> str|None
@@ -13,7 +13,7 @@ Md5Getter = Callable[[dict, Dict[str, dict]], str|None]
 REGEX_DIGITS_SPLITTER = re.compile(r"(\d+)")
 
 
-def improved_AbstractFileSystem_str_function(self: AbstractFileSystem, visited: set = None) -> str:
+def improved_abstract_file_system_str_function(self: AbstractFileSystem, visited: set = None) -> str:
     if visited is None:
         visited = set()
     visited.add(self)
@@ -26,20 +26,19 @@ def improved_AbstractFileSystem_str_function(self: AbstractFileSystem, visited: 
         if isinstance(value, (int, float, bool)):
             kvs.append(f"{key}={value}")
         elif isinstance(value, str):
-            kvs.append(f"{key}='{log_str(value, length=30)}'")
+            kvs.append(safe_log_key_value_str(key, value, key_length=30, value_length=30))
         elif isinstance(value, AbstractFileSystem):
             if value in visited:
                 kvs.append(f"{key}={value.__class__.__name__}(already described)")
             else:
-                kvs.append(f"{key}={improved_AbstractFileSystem_str_function(value, visited)}")
+                kvs.append(f"{key}={improved_abstract_file_system_str_function(value, visited)}")
         else:
             pass
-            #kvs.append(f"{key}={log_str(str(value), length=30)}")
     return log_str(f"{name}({', '.join(kvs)})", length=300)
 
 
-def patch_AbstractFileSystem_str_function():
-    AbstractFileSystem.__str__ = improved_AbstractFileSystem_str_function
+def patch_abstract_file_system_str_function():
+    AbstractFileSystem.__str__ = improved_abstract_file_system_str_function
 
 
 def natural_sort_key(s: str) -> list[str | int]:

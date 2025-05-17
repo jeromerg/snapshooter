@@ -20,13 +20,13 @@ import pandas as pd
 from fsspec import AbstractFileSystem
 
 from snapshooter.cache_utils import FileUniqueStringCache, UniqueStringCache
-from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key, patch_AbstractFileSystem_str_function
+from .fsspec_utils import get_md5_getter, jsonify_file_info, natural_sort_key, patch_abstract_file_system_str_function
 from .jsonl_utils import dumps_jsonl, loads_jsonl
 
 log = logging.getLogger("snapshooter")
 
 
-patch_AbstractFileSystem_str_function()
+patch_abstract_file_system_str_function()
 
 
 # noinspection RegExpRedundantEscape
