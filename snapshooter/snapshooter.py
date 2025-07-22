@@ -666,13 +666,17 @@ class ParallelLister:
                 self.dir_queue.task_done()
         except InterruptedError:
             pass  # some tools log error is thread die because of exception, but we want to ignore this excepted case
-
+        finally:
+            log.debug(f"ParallelLister: Listing thread '{threading.current_thread().name}' finished processing queue.")
+            
     def _log_progress(self):
         try:
             while True:
                 time.sleep(10)
                 self.check_interrupted()
-                log.info(f"Progress: {len(self.result)} files listed.")
+                with self.lock:
+                    current_count = len(self.result)
+                log.info(f"Progress: {current_count} files listed.")
         except InterruptedError:
             # some tools log error is thread die because of exception, but we want to ignore this excepted case
             log.debug("ParallelLister: Logging thread interrupted properly.")
@@ -748,7 +752,10 @@ class ParallelFileProcessor:
             while True:
                 time.sleep(10)
                 self.check_interrupted()
-                log.info(f"{self.__class__.__name__}: Progress ... {self.copy_count}/{len(self.relative_paths_to_process)} files processed.")
+                with self.lock:
+                    current_copy_count = self.copy_count
+                    total_files = len(self.relative_paths_to_process)
+                log.info(f"{self.__class__.__name__}: Progress ... {current_copy_count}/{total_files} files processed.")
         except InterruptedError:
             # some tools log error is thread die because of exception, but we want to ignore this excepted case
             log.debug(f"{self.__class__.__name__}: Logging thread interrupted properly.")
