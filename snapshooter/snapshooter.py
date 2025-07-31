@@ -497,6 +497,32 @@ class Snapshooter:
             raise Exception(f"restore_snapshot: Unknown type {type(snapshot_to_restore)} for snapshot_to_restore. Expected: pd.DataFrame, List[dict]")
         log.info(f"Snapshot to restore loaded")
 
+        # validate the snapshot to restore (which may have been manually edited, so we need to ensure, that it is a valid snapshot)
+        df_dup = df_snapshot_to_restore.groupby("name").aggregate(
+            row_count=('md5', 'size'),
+            md5_unique_count = ('md5', 'nunique'),
+            md5_concat=('md5', lambda s: ', '.join(sorted(s.unique())))
+        ).reset_index()
+        # raise error if duplicate file names with different md5s are found
+        df_dup_with_different_md5 = df_dup[df_dup["md5_unique_count"] > 1]
+        if len(df_dup_with_different_md5) > 0:
+            log.error(f"Snapshot to restore contains duplicate file names with different md5s: {len(df_dup_with_different_md5)} duplicates found")
+            for idx, (_, row) in enumerate(df_dup_with_different_md5.iterrows()):
+                log.error(f"Duplicate file name '{row['name']}' with md5s: {row['md5_concat']}")
+                if idx > 5000:
+                    log.error(f"Too many duplicates to log, only showing first 5000 duplicates")
+                    break
+            raise Exception(f"Snapshot to restore contains duplicate file names with different md5s: {len(df_dup_with_different_md5)} duplicates found")
+        # write a warning if duplicate file names with the same md5 are found
+        df_dup_with_same_md5 = df_dup[df_dup["md5_unique_count"] == 1]
+        if len(df_dup_with_same_md5) > 0:
+            log.warning(f"Snapshot to restore contains duplicate file names with the same md5s: {len(df_dup_with_same_md5)} duplicates found")
+            for idx, (_, row) in enumerate(df_dup_with_same_md5.iterrows()):
+                log.warning(f"Duplicate file name '{row['name']}' with md5s: {row['md5_concat']}")
+                if idx > 5000:
+                    log.warning(f"Too many duplicates to log, only showing first 5000 duplicates")
+                    break
+
         log.info("Making current snapshot to apply diff to")
         current_snapshot, _, _ = self.make_snapshot(save_snapshot=save_snapshot_before, download_missing_files=True)
         log.info(f"Current snapshot made")
